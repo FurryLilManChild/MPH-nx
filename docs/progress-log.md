@@ -11,6 +11,9 @@ Newest first.
 - Compile fixes (patch 0001): debug_server.cpp includes arm9_native.h unconditionally; host_info.cpp skips uname on Switch; live_overlay_platform.cpp returns early off Windows/Linux; debounced cartridge save write on Switch (ported from aabrole/ndsrecomp).
 - Compat headers for libslirp (sys/uio.h, sys/un.h, net/if.h); sysconf, setsid, sigprocmask stand-ins.
 - Link test with a stand-in bank passed; SDL2 Switch video (GLES2 renderer), audio and controller backends confirmed in the ELF.
+- Coverage banks recovered: tools/extract_banks_from_exe.py rebuilt all 248 private runtime/coverage pages from the validation tables and COFF symbols in Mark's v0.7.12 nds_runner.exe (about 19,700 functions, zero conflicting bytes; overlay 0 cross-check: 141,967 bytes, zero mismatches with the ROM). Pages average about 21% known bytes; the recompiler finds fewer functions on partial pages (FMV runtime 1,310 vs 2,355 in the exe), so expect some interpreter time there. Private output lives outside the repo.
+- Build: 264/264 title banks (MPH_ALLOW_MISSING_BANKS=OFF), 1,249 steps, about 85 minutes on 2 cores. mph-nx.nro 344 MB, sha256 d210cde48aefa34437298e3680205a48bb47eb4b006f6405a9b48f3494bac1e3. ELF text 341 MB, data 21 MB, bss 121 MB. All 266 dispatch tables present. ELF archived for crash offsets.
+- Delivered to C:\MPH-nx\out\sd\switch\mph-nx\ (nro, game.toml, README.txt, ROM), sent as 20 parts of 18 MB and rejoined on the PC; sha256 verified there.
 
 ## 2026-11-04: kickoff
 
