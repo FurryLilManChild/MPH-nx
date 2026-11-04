@@ -1,0 +1,151 @@
+diff --git a/runner/src/debug_server.cpp b/runner/src/debug_server.cpp
+index bf4ffb2..1f122af 100644
+--- a/runner/src/debug_server.cpp
++++ b/runner/src/debug_server.cpp
+@@ -20,8 +20,8 @@
+ #include "savestate.h"
+ #include "state.h"
+ #include "execution_model.h"
++#include "arm9_native.h"  /* MPH-nx: needed by every build (stubs when no Dynarmic) */
+ #if defined(NDS_ARM9_DYNARMIC)
+-#include "arm9_native.h"
+ #endif
+ #include "execution_region.h"
+ #include "execution_region_stats.h"
+diff --git a/runner/src/frontend.cpp b/runner/src/frontend.cpp
+index 7d9d4eb..aa98faf 100644
+--- a/runner/src/frontend.cpp
++++ b/runner/src/frontend.cpp
+@@ -4218,6 +4218,9 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+ #endif
+             );
+         const uint64_t presentation_end=SDL_GetPerformanceCounter();
++#if defined(__SWITCH__)
++        nds_io_cartridge_save_maybe_flush();  // MPH-nx: debounced save write
++#endif
+ #if defined(NDS_HAVE_COMPUTE_RENDERER)
+         if (cpu_handoff) {
+             if (producer_pending) {
+diff --git a/runner/src/host_info.cpp b/runner/src/host_info.cpp
+index 56dbb80..2640c44 100644
+--- a/runner/src/host_info.cpp
++++ b/runner/src/host_info.cpp
+@@ -17,6 +17,8 @@
+ #define WIN32_LEAN_AND_MEAN 1
+ #endif
+ #include <windows.h>
++#elif defined(__SWITCH__)
++#include <unistd.h>
+ #else
+ #include <sys/utsname.h>
+ #include <unistd.h>
+@@ -199,11 +201,16 @@ NdsHostInfo collect() {
+         info.ram_bytes =
+             static_cast<uint64_t>(pages) * static_cast<uint64_t>(page_size);
+     }
++#if defined(__SWITCH__)
++    info.os_name = "Horizon (Nintendo Switch)";
++    info.os_version = "libnx";
++#else
+     utsname uts{};
+     if (uname(&uts) == 0) {
+         info.os_name = uts.sysname;
+         info.os_version = std::string(uts.release) + " " + uts.version;
+     }
++#endif
+ #endif
+ 
+     if (info.cpu_brand.empty()) info.cpu_brand = "unknown";
+diff --git a/runner/src/io.cpp b/runner/src/io.cpp
+index 20544a0..13bb2f2 100644
+--- a/runner/src/io.cpp
++++ b/runner/src/io.cpp
+@@ -1,5 +1,6 @@
+ // io.cpp — see io.h. Register map per GBATEK ("DS I/O Maps"); clean-room.
+ 
++#include <chrono>
+ #include "io.h"
+ #include "wifi.h"
+ 
+@@ -1676,6 +1677,23 @@ int active() { return (g_nds_active == NDS_ARM9) ? 0 : 1; }
+ 
+ // The AUXSPI backup-chip protocol itself lives in cart_backup.cpp so it can be
+ // pinned by cart_backup_test; this only adds the write-through to disk.
++#if defined(__SWITCH__)
++// MPH-nx (after the AYN Thor port, aabrole/ndsrecomp): a flash save is
++// hundreds of small SPI transactions, and writing the whole 256 KiB image to
++// the SD card for each one stalls the emulation thread. Record the time of
++// the last write instead; nds_io_cartridge_save_maybe_flush(), called once
++// per presented frame, writes once the chip has been quiet for 500 ms. Exit
++// paths still flush unconditionally.
++static std::chrono::steady_clock::time_point g_cart_last_spi_write{};
++
++uint8_t cart_sram_spi_write(uint8_t val, uint32_t pos, bool last) {
++    const uint8_t result =
++        nds_cart_backup_spi_write(g_cart_backup, val, pos, last);
++    if (last && g_cart_backup.dirty)
++        g_cart_last_spi_write = std::chrono::steady_clock::now();
++    return result;
++}
++#else
+ uint8_t cart_sram_spi_write(uint8_t val, uint32_t pos, bool last) {
+     const uint8_t result =
+         nds_cart_backup_spi_write(g_cart_backup, val, pos, last);
+@@ -1683,6 +1701,7 @@ uint8_t cart_sram_spi_write(uint8_t val, uint32_t pos, bool last) {
+         nds_io_flush_cartridge_save();
+     return result;
+ }
++#endif
+ 
+ // IR-cartridge SPI front end (melonDS CartRetailIR::SPIWrite). Byte 0 of a
+ // transfer is the IR command and answers 0; 0x00 passes the remainder through
+@@ -2012,6 +2031,15 @@ void nds_io_set_cartridge_save_path(const char* path) {
+     g_cart_save_path = path ? path : "";
+ }
+ 
++#if defined(__SWITCH__)
++void nds_io_cartridge_save_maybe_flush() {
++    if (!g_cart_backup.dirty || g_cart_save_path.empty()) return;
++    const auto now = std::chrono::steady_clock::now();
++    if (now - g_cart_last_spi_write > std::chrono::milliseconds(500))
++        nds_io_flush_cartridge_save();
++}
++#endif
++
+ bool nds_io_flush_cartridge_save() {
+     if (!g_cart_backup.dirty || g_cart_save_path.empty())
+         return true;
+diff --git a/runner/src/io.h b/runner/src/io.h
+index 9886382..f4d0de9 100644
+--- a/runner/src/io.h
++++ b/runner/src/io.h
+@@ -343,5 +343,8 @@ void     nds_io_configure_cartridge_save(
+ // automatic writes to this canonical file until a fresh process boot.
+ void     nds_io_set_cartridge_save_path(const char* path);
+ bool     nds_io_flush_cartridge_save();
++#if defined(__SWITCH__)
++void     nds_io_cartridge_save_maybe_flush();  // MPH-nx: debounced save write
++#endif
+ bool     nds_io_cartridge_save_snapshot(const uint8_t** data, uint32_t* size,
+                                         bool* dirty);
+diff --git a/runner/src/live_overlay_platform.cpp b/runner/src/live_overlay_platform.cpp
+index 45b561e..2915312 100644
+--- a/runner/src/live_overlay_platform.cpp
++++ b/runner/src/live_overlay_platform.cpp
+@@ -83,8 +83,10 @@ std::string live_overlay_bundled_tcc_command(
+     const auto tcc = toolchain / "tcc" / "tcc";
+     const auto runner = exe_dir / "nds_runner";
+ #else
++    (void)exe_dir;
+     return {};
+ #endif
++#if defined(_WIN32) || defined(__linux__)
+     const auto script = toolchain / "compile_live_shards.py";
+     const auto include = toolchain / "include";
+     ec.clear();
+@@ -104,4 +106,5 @@ std::string live_overlay_bundled_tcc_command(
+         " --runner-exe " + shell_quote(runner) +
+         " --compiler tcc --tcc " + shell_quote(tcc) +
+         " --include-roots --min-hits 8";
++#endif
+ }
