@@ -1,0 +1,41 @@
+# Game data: never commit
+*.nds
+*.sav
+*.dsv
+assets/
+bios/*.rom
+bios/*.bin
+firmware.bin
+generated-identity.bin
+
+# Generated from the ROM (recompiled banks, captured pages, coverage)
+generated/
+banks/
+*.bank.c
+coverage/
+diagnostics/
+live-shard-cache/
+**/snapshots/
+*coverage*.json
+performance-*.jsonl
+hostprof-*
+
+# Build output and SD staging
+build/
+build-*/
+out/
+*.nro
+*.nacp
+*.elf
+*.o
+*.a
+
+# Local upstream checkouts and the PC baseline
+pc baseline/
+pc-baseline/
+external/
+vendor/
+
+# OS
+Thumbs.db
+.DS_Store
