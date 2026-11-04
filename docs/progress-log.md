@@ -2,6 +2,16 @@
 
 Newest first.
 
+## 2026-11-04: switch-test1 (Build 1, boot test)
+
+- Toolchain: ghcr.io/danfromtico/switch-dev-legacy-vulkan (devkitA64 GCC 15.2, SDL2, Mesa) in the cloud.
+- Profile: portable path (no Dynarmic), SDL2, software 3D renderer, compute renderer off, HLE math and submit, FreeBIOS plus generated firmware, direct boot, networking off, widescreen off, internal resolution 1, governor off.
+- Banks: 16 of 264 declared title banks build from the ROM (14 overlays, 2 ARM7 aliases, plus main ARM9/ARM7 closures). The other 248 are runtime/coverage banks made from RAM page captures that upstream keeps in a private store; they must come from our own coverage manifests (upstream tools/ingest_coverage_manifests.py). Expect more interpreter (tier3) time than the PC release.
+- Retail BIOS banks stubbed (empty dispatch); FreeBIOS banks generated from third_party/freebios.
+- Compile fixes (patch 0001): debug_server.cpp includes arm9_native.h unconditionally; host_info.cpp skips uname on Switch; live_overlay_platform.cpp returns early off Windows/Linux; debounced cartridge save write on Switch (ported from aabrole/ndsrecomp).
+- Compat headers for libslirp (sys/uio.h, sys/un.h, net/if.h); sysconf, setsid, sigprocmask stand-ins.
+- Link test with a stand-in bank passed; SDL2 Switch video (GLES2 renderer), audio and controller backends confirmed in the ELF.
+
 ## 2026-11-04: kickoff
 
 - Verified Mark's dump: AMHE, revision 0, SHA-1 90164d1ac127ee5f9815ea4ae7de798c7b5fc629 (matches upstream).
