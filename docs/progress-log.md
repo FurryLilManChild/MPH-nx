@@ -2,6 +2,13 @@
 
 Newest first.
 
+## 2026-11-04: switch-test3 results, switch-test4
+
+- test3: touch still did nothing; A passes "touch to start", B backs out, no button selects Adventure/Multiplayer (touch-only on DS). Logs had no input detail.
+- Correction to the test2 diagnosis: SDL's Switch driver already defaults touch-to-mouse off, so touches never became mouse clicks; they were SDL finger events nobody used. SDL only polls the touchscreen while a window has focus and text input is inactive, and drops touches silently otherwise (likely cause, unconfirmed).
+- switch-test4: nx_platform reads the touchscreen and pad directly through HID each frame (mphnx_input_poll); the frontend applies that touch after every other touch writer, holds quick taps 3 frames, and logs each touch down/up and any touch outside the bottom screen. SDL finger events are now only counted and logged, to show whether SDL delivers them at all. Hold ZL for a touch cursor (left stick moves, A taps); while it is on, buttons, stick and Prime pad input do not reach the game.
+- mph-nx.nro sha256 6b83c7e25552cb15220ca24a0e37f5bb575613a9688cc0b7b74746f1b04bef59, verified on the PC.
+
 ## 2026-11-04: switch-test3 delivered
 
 - mph-nx.nro sha256 ed71c1fd71203fcbb3446553a36e32b5d8224162c9ae026c27ba7b2fadd9d597, verified on the PC in C:\MPH-nx\out\sd\switch\mph-nx.
