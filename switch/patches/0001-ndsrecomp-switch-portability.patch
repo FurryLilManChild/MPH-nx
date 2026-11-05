@@ -826,7 +826,7 @@ index 56dbb80..2640c44 100644
  
      if (info.cpu_brand.empty()) info.cpu_brand = "unknown";
 diff --git a/runner/src/io.cpp b/runner/src/io.cpp
-index 20544a0..f52c380 100644
+index 20544a0..b14bd95 100644
 --- a/runner/src/io.cpp
 +++ b/runner/src/io.cpp
 @@ -1,5 +1,6 @@
@@ -836,19 +836,18 @@ index 20544a0..f52c380 100644
  #include "io.h"
  #include "wifi.h"
  
-@@ -89,6 +90,11 @@ uint32_t g_biosprot = 0;               // 0x308 BIOSPROT (ARM7, write-once)
- // image follows the raw/KEY1/normal command phases. ROMCTRL is
- // 0x040001A4 and the data port is 0x04100010.
- uint32_t g_romctrl = 0;
+@@ -33,6 +34,10 @@ extern "C" void runtime_clear_fast_limit(void);
+ 
+ uint32_t g_nds_irq_pending_cache[2] = {0, 0};
+ 
 +// MPH-nx "Fast loading" (menu option, off by default). See the ROMCTRL read.
 +bool g_nx_fast_card = false;
 +unsigned long long g_nx_fast_card_skips = 0;
-+extern "C" unsigned long long g_nds_fast_limit;
-+extern "C" unsigned long long g_runtime_cycles;
- uint32_t g_card_transfer_pos = 0;   // bytes prepared so far
- uint32_t g_card_transfer_len = 0;   // bytes in this block
- uint64_t g_card_deadline = UINT64_MAX;
-@@ -1676,6 +1682,23 @@ int active() { return (g_nds_active == NDS_ARM9) ? 0 : 1; }
++
+ namespace {
+ 
+ // ── IPCSYNC (0x04000180) — the cross-core handshake ─────────────────────
+@@ -1676,6 +1681,23 @@ int active() { return (g_nds_active == NDS_ARM9) ? 0 : 1; }
  
  // The AUXSPI backup-chip protocol itself lives in cart_backup.cpp so it can be
  // pinned by cart_backup_test; this only adds the write-through to disk.
@@ -872,7 +871,7 @@ index 20544a0..f52c380 100644
  uint8_t cart_sram_spi_write(uint8_t val, uint32_t pos, bool last) {
      const uint8_t result =
          nds_cart_backup_spi_write(g_cart_backup, val, pos, last);
-@@ -1683,6 +1706,7 @@ uint8_t cart_sram_spi_write(uint8_t val, uint32_t pos, bool last) {
+@@ -1683,6 +1705,7 @@ uint8_t cart_sram_spi_write(uint8_t val, uint32_t pos, bool last) {
          nds_io_flush_cartridge_save();
      return result;
  }
@@ -880,7 +879,7 @@ index 20544a0..f52c380 100644
  
  // IR-cartridge SPI front end (melonDS CartRetailIR::SPIWrite). Byte 0 of a
  // transfer is the IR command and answers 0; 0x00 passes the remainder through
-@@ -2012,6 +2036,20 @@ void nds_io_set_cartridge_save_path(const char* path) {
+@@ -2012,6 +2035,20 @@ void nds_io_set_cartridge_save_path(const char* path) {
      g_cart_save_path = path ? path : "";
  }
  
@@ -901,7 +900,7 @@ index 20544a0..f52c380 100644
  bool nds_io_flush_cartridge_save() {
      if (!g_cart_backup.dirty || g_cart_save_path.empty())
          return true;
-@@ -3346,6 +3384,25 @@ uint32_t nds_io_read(uint32_t addr, uint32_t width) {
+@@ -3346,6 +3383,25 @@ uint32_t nds_io_read(uint32_t addr, uint32_t width) {
              return addr == 0x040001A2u ? (auxspi_read_data() & m) : 0u;
          case 0x040001A4: case 0x040001A5:
          case 0x040001A6: case 0x040001A7:

@@ -2,6 +2,14 @@
 
 Newest first.
 
+## 2026-11-05: switch-test5 results, switch-test6
+
+- test5 (Mark): save recovered and loaded; + pauses; ZL scans (door opened); remapping works; layouts and touch work; settings persist across builds.
+- A vs B at the same spots: 17 to 19 fps and 22 to 25 fps in both. The -fPIE + hidden visibility change (GOT loads removed) gained nothing measurable; dropped. Lesson: one cached load per global is not where the time goes.
+- Pokemon DS Widescreen (mamesj, GPL-3.0) runs melonDS with its FAST JIT and deko3d on Switch at 1785 MHz; not a native port. Takeaways: a JIT that keeps guest registers in host registers is the speed reference; deko3d is the expected renderer (Mark: if we skip deko3d, the performance must justify it).
+- switch-test6: emulation-thread profiler (svcSetThreadActivity pause + svcGetThreadContext3, 500 Hz, PC plus 6 frame records, split by guest PC into card loading and the rest) writing logs/profile.txt every 30 s; "Fast loading" menu option (default off): at MPH's NitroSDK card wait loops (0x020919EC, 0x02091D10, 0x0209194C), a ROMCTRL read while busy and not ready advances the ARM9 clock to the published fast limit (the live slice cap, never past the next event or ARM7 rendezvous) instead of spinning.
+- mph-nx.nro sha256 f6786fb6d7fa7529e2f04c8e08700733abcc03a8dd411945afeee6eb99424c99, verified on the PC in out\sd-test6.
+
 ## 2026-11-05: switch-test5 (A and B)
 
 - Saves: Switch branch in battery_save.cpp moves the old file to .bak, renames the new one in, then deletes .bak (FAT refuses a rename onto an existing file; this rule was already in switch-port-base and was missed). Writes are skipped when bytes are unchanged; a failed flush waits 10 s instead of retrying every frame. nx_main moves a leftover mph.sav.tmp into place on start (old file kept as mph.sav.old).
