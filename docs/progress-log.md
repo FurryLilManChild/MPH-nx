@@ -2,6 +2,11 @@
 
 Newest first.
 
+## 2026-11-04: switch-test3 delivered
+
+- mph-nx.nro sha256 ed71c1fd71203fcbb3446553a36e32b5d8224162c9ae026c27ba7b2fadd9d597, verified on the PC in C:\MPH-nx\out\sd\switch\mph-nx.
+- Test goal: touch the bottom screen in handheld mode to get past the menus into Adventure, then play a few minutes. Speed and choppy audio expected unchanged; docked mode still has no touch.
+
 ## 2026-11-04: switch-test2 results, switch-test3 prep
 
 - Picture works: renderer opengles2, output 1280x720, stacked screens visible. Snapshot at frame 1800 shows the Adventure / Multiplayer / Options menu drawn correctly. Prime Controls enabled ("melonPrimeDS bindings enabled"; pad aim engaged when sticks used).
