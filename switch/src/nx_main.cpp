@@ -26,7 +26,7 @@
 int nds_upstream_main(int argc, char** argv);  // upstream main.cpp, renamed at compile time
 
 #ifndef MPHNX_VERSION
-#define MPHNX_VERSION "switch-test1"
+#define MPHNX_VERSION "switch-test2"
 #endif
 
 static const char* kAppDir = "/switch/mph-nx";
@@ -309,8 +309,9 @@ int main(int argc, char** argv) {
     add("--generated-firmware");
     add("--interactive");
     add("--screen-layout"); add("stacked");
-    add("--fullscreen"); add("borderless");   // fill 1280x720, aspect kept by SDL logical size
+    // No --fullscreen: the Switch window is created at 1280x720 (patch 0001).
     add("--mph-prime-controls"); add("on");
+    add("--relative-mouse-touch"); add("on");  // upstream requires it for Prime controls
     add("--save-path"); add(app + "/mph.sav");
     add("--firmware-state-path"); add(app + "/firmware-state.bin");
     add("--runtime-settings-path"); add(app + "/runtime-settings.ini");

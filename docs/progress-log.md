@@ -2,6 +2,14 @@
 
 Newest first.
 
+## 2026-11-04: switch-test1 results
+
+- Ran without crashing; audio played (choppy); button presses were recognized (intro skipped to the title screen). TV showed black the whole time.
+- Diagnostics (23 samples, about 46 s): 1,012 frames presented, so the renderer was presenting. Interpreter (tier3) ran zero ARM9 and zero ARM7 instructions: the recovered banks covered everything this session ran.
+- CPU time per frame (emulation only, CPU at 1785 MHz): intro movie 56 to 87 ms (11 to 18 fps), title screen steady about 35.5 ms (26 fps), one light stretch 14 to 19 ms (about 50 fps). Presentation about 2 ms; 2D render 2 to 5 ms on worker threads. Audio underruns about 64 per 2 s, as expected below full speed. The emulation thread is the bottleneck.
+- Black screen cause (likely): upstream creates a DS-sized window and then switches to fullscreen desktop. SDL2's Switch driver never resizes its NWindow for fullscreen desktop, so the renderer draws for a 1920x1080 window into a smaller buffer. Clears still work, but upstream clears to RGB 20,20,20, which reads as black on a TV.
+- Prime controls were off: upstream enables them only with --relative-mouse-touch on.
+
 ## 2026-11-04: switch-test1 (Build 1, boot test)
 
 - Toolchain: ghcr.io/danfromtico/switch-dev-legacy-vulkan (devkitA64 GCC 15.2, SDL2, Mesa) in the cloud.

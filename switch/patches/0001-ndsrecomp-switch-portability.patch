@@ -13,10 +13,95 @@ index bf4ffb2..1f122af 100644
  #include "execution_region.h"
  #include "execution_region_stats.h"
 diff --git a/runner/src/frontend.cpp b/runner/src/frontend.cpp
-index 7d9d4eb..aa98faf 100644
+index 7d9d4eb..dc245c0 100644
 --- a/runner/src/frontend.cpp
 +++ b/runner/src/frontend.cpp
-@@ -4218,6 +4218,9 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -1456,6 +1456,42 @@ void destroy_presentation(FrontendPresentation& presentation) {
+     presentation.windows[1] = nullptr;
+ }
+ 
++#if defined(__SWITCH__) && !defined(NDS_HAVE_SDL3)
++// MPH-nx diagnostics: which renderer SDL picked and what size it draws at.
++static void mphnx_log_renderer(SDL_Renderer* renderer, SDL_Window* window) {
++    SDL_RendererInfo info{};
++    int ow = 0, oh = 0, ww = 0, wh = 0;
++    SDL_GetRendererInfo(renderer, &info);
++    SDL_GetRendererOutputSize(renderer, &ow, &oh);
++    SDL_GetWindowSize(window, &ww, &wh);
++    std::fprintf(stderr,
++        "[mph-nx] renderer=%s flags=0x%x output=%dx%d window=%dx%d\n",
++        info.name ? info.name : "?", (unsigned)info.flags, ow, oh, ww, wh);
++}
++
++// Saves what the renderer drew (before present) at a few frame counts, so a
++// black TV can be told apart from a black render.
++static void mphnx_maybe_snapshot(SDL_Renderer* renderer) {
++    static unsigned frame = 0;
++    ++frame;
++    if (frame != 120 && frame != 600 && frame != 1800 && frame != 3600) return;
++    int ow = 0, oh = 0;
++    if (SDL_GetRendererOutputSize(renderer, &ow, &oh) != 0 || ow <= 0 || oh <= 0) return;
++    SDL_Surface* surf = SDL_CreateRGBSurfaceWithFormat(0, ow, oh, 32, SDL_PIXELFORMAT_ARGB8888);
++    if (!surf) return;
++    if (SDL_RenderReadPixels(renderer, nullptr, SDL_PIXELFORMAT_ARGB8888,
++                             surf->pixels, surf->pitch) == 0) {
++        char path[96];
++        std::snprintf(path, sizeof path, "/switch/mph-nx/logs/frame-%04u.bmp", frame);
++        SDL_SaveBMP(surf, path);
++        std::fprintf(stderr, "[mph-nx] snapshot %s (%dx%d)\n", path, ow, oh);
++    } else {
++        std::fprintf(stderr, "[mph-nx] snapshot read failed: %s\n", SDL_GetError());
++    }
++    SDL_FreeSurface(surf);
++}
++#endif
++
+ SDL_Renderer* create_renderer(SDL_Window* window) {
+ #if defined(NDS_HAVE_SDL3)
+     // Driver order is NOT left to SDL3's default here. SDL3 orders its Windows
+@@ -1518,6 +1554,16 @@ SDL_Window* create_window(const char* title, int x, int y, int w, int h,
+         SDL_SetWindowPosition(window, x, y);
+     return window;
+ #else
++#if defined(__SWITCH__)
++    // MPH-nx: SDL2 on Horizon has one window, backed by the display's NWindow.
++    // Its fullscreen-desktop path changes the logical window size without
++    // resizing the NWindow buffer, so create the window at the panel size up
++    // front and never resize it; the renderer's logical size does the scaling.
++    (void)w; (void)h;
++    w = 1280;
++    h = 720;
++    flags &= ~static_cast<uint64_t>(SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
++#endif
+     return SDL_CreateWindow(title, x, y, w, h, static_cast<uint32_t>(flags));
+ #endif
+ }
+@@ -1897,9 +1943,13 @@ bool create_presentation(const NdsFrontendOptions& options,
+                     ? presentation.screen_widths[screen]
+                     : presentation.canvas_width,
+                 logical_height);
+-#if !defined(NDS_HAVE_SDL3)
++#if !defined(NDS_HAVE_SDL3) && !defined(__SWITCH__)
+             SDL_RenderSetIntegerScale(presentation.renderers[screen],
+                                       SDL_TRUE);
++#endif
++#if defined(__SWITCH__)
++            mphnx_log_renderer(presentation.renderers[screen],
++                               presentation.windows[screen]);
+ #endif
+         }
+         presentation.textures[screen] = SDL_CreateTexture(
+@@ -2169,6 +2219,9 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
+                                 virtual_stylus_x, virtual_stylus_y);
+         draw_savestate_notice(renderer, bottom_rect, savestate_notice);
+         ticks.draw += SDL_GetPerformanceCounter() - start;
++#if defined(__SWITCH__)
++        mphnx_maybe_snapshot(renderer);
++#endif
+         start = SDL_GetPerformanceCounter();
+         SDL_RenderPresent(renderer);
+         ticks.swap += SDL_GetPerformanceCounter() - start;
+@@ -4218,6 +4271,9 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
  #endif
              );
          const uint64_t presentation_end=SDL_GetPerformanceCounter();
