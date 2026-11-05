@@ -49,6 +49,11 @@ if(MPHNX_PIE_LIBS)
             target_compile_options(${_lib} PRIVATE -fPIE)
         endif()
     endforeach()
+    # -fPIE alone still sends extern data through the GOT on AArch64 GCC.
+    # Declaring everything hidden (static link, so nothing is preemptible)
+    # makes the generated banks address the runtime globals PC-relative.
+    target_compile_options(nds_banks PRIVATE
+        "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/compat/mphnx_hidden.h")
     message(STATUS "MPH-nx: static libraries built -fPIE")
 endif()
 

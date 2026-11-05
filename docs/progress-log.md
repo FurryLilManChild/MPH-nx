@@ -2,6 +2,17 @@
 
 Newest first.
 
+## 2026-11-05: switch-test5 (A and B)
+
+- Saves: Switch branch in battery_save.cpp moves the old file to .bak, renames the new one in, then deletes .bak (FAT refuses a rename onto an existing file; this rule was already in switch-port-base and was missed). Writes are skipped when bytes are unchanged; a failed flush waits 10 s instead of retrying every frame. nx_main moves a leftover mph.sav.tmp into place on start (old file kept as mph.sav.old).
+- Input: + is DS Start (upstream used it to open its menu, so the game could never pause). Tap minus toggles the touch cursor (left stick, A taps) and, in Top only, the bottom-screen overlay. Hold minus 0.5 s opens the MPH-nx menu. ZL is scan/fire again. Menu uses Switch A to accept, B to go back.
+- Layouts (window pixels, logical size off on Switch): Stacked (default, 480x360 each), Big top + small bottom (960x720 + 320x240 bottom right), Top only (960x720; minus shows the bottom screen at 853x640 over a dimmed top). Touch maps through the drawn bottom rect.
+- MPH-nx menu (upstream runtime UI with our items): screen layout, show speed (FPS and speed vs 59.83 Hz), remapping of jump, morph, boost, visor, fire, scan/fire, beam, missile, confirm, pause; reset; resume; quit. Saved to /switch/mph-nx/mph-nx-settings.ini.
+- Speed data from switch-test4 (corrected): gameplay 14 to 16 fps (35 to 45 ms emu per frame, flat profile); loading about 9 fps with about 75% of dispatches in the NitroSDK card PIO loop at 0x020919EC (ROMCTRL bit 23/31 polling, 0xB7 reads). Generated code is faithful-v1: guest registers in g_cpu, per-instruction yield check, instruction count, hook check, cycle accounting.
+- Build B (MPHNX_PIE_LIBS=ON): static libraries -fPIE, banks also -include compat/mphnx_hidden.h (visibility hidden). First B attempt with -fPIE alone produced identical code (AArch64 GCC still uses the GOT for extern data); caught by disassembly before delivery. Final B addresses globals with adrp+add, no GOT load; NRO 322 MB vs 344 MB.
+- Card PIO shortcut deferred: upstream's MKDS version (hle_mkds_card_pio.cpp) is tied to MKDS addresses and the native performance model; needs a careful MPH port.
+- A sha256 9d5eed55eab12608ccb6de92f005496de560eb03605173466df5271dc7406c21, B sha256 d0bf5eea7d055f341ab2c98480da81b70ece8c6a9678677c20271abee703df91, both verified on the PC in out\sd-test5.
+
 ## 2026-11-04: switch-test4 results
 
 - Touch works (22 finger taps mapped correctly) and the ZL cursor works. SDL did deliver finger events, so the test3 "SDL drops touches" theory was wrong; the test3 cause is unknown and moot now.
