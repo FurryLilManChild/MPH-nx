@@ -2,6 +2,15 @@
 
 Newest first.
 
+## 2026-11-04: switch-test4 results
+
+- Touch works (22 finger taps mapped correctly) and the ZL cursor works. SDL did deliver finger events, so the test3 "SDL drops touches" theory was wrong; the test3 cause is unknown and moot now.
+- Save bug: every flush failed ("cannot replace save file: File exists", 3,731 times). upstream battery_save.cpp writes mph.sav.tmp then rename()s over mph.sav; Horizon's rename does not replace an existing file. The newest save is likely in mph.sav.tmp. The failing flush also retried every 500 ms, rewriting 256 KB each time.
+- Controls (Mark): B jump, A morph ball, X confirm in most menus, R3 visor, RT fire. ZL scan did not work because the cursor took ZL, which blocks progress at scan-locked doors. Bottom-screen icon taps work.
+- Speed in game: about 9 fps, 83 ms per frame, of which ARM9 recompiled code is 70 ms; ARM7 3 ms, timers/devices a few ms each, present 2 ms. Banks are already -O2. Speed needs hot-routine profiling first.
+- Mark wants soon: an in-game menu with button remapping and screen layout choices, and performance work. The upstream + menu only has mouse sensitivity, frame interpolation and quit.
+- Proposed next: test5 (save fix plus recovery of mph.sav.tmp, cursor moved to a minus toggle), test6 (guest hot-routine sampler), then the MPH-nx menu.
+
 ## 2026-11-04: switch-test3 results, switch-test4
 
 - test3: touch still did nothing; A passes "touch to start", B backs out, no button selects Adventure/Multiplayer (touch-only on DS). Logs had no input detail.
