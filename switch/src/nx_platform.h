@@ -19,6 +19,7 @@ typedef struct MphnxInput {
     int touch_y;         // first finger, 0..719
     int zl;              // ZL held
     int a;               // A held
+    int minus;           // minus held
     float lx, ly;        // left stick, -1..1, +y is down
 } MphnxInput;
 void mphnx_input_poll(MphnxInput* out);

@@ -1,3 +1,57 @@
+diff --git a/runner/src/battery_save.cpp b/runner/src/battery_save.cpp
+index b6a3e1a..592399b 100644
+--- a/runner/src/battery_save.cpp
++++ b/runner/src/battery_save.cpp
+@@ -79,6 +79,19 @@ bool nds_battery_save_write_atomic(
+         }
+     }
+ 
++#if defined(__SWITCH__)
++    // MPH-nx: write only when the bytes changed (SD writes are slow).
++    {
++        std::error_code size_ec;
++        if (std::filesystem::file_size(save_path, size_ec) == size && !size_ec) {
++            std::ifstream current(save_path, std::ios::binary);
++            std::string bytes(size, '\0');
++            if (current && current.read(bytes.data(), static_cast<std::streamsize>(size)) &&
++                std::memcmp(bytes.data(), data, size) == 0)
++                return true;
++        }
++    }
++#endif
+     std::filesystem::path temporary = save_path;
+     temporary += ".tmp";
+     {
+@@ -105,6 +118,29 @@ bool nds_battery_save_write_atomic(
+                          std::to_string(GetLastError()) + ")");
+         return false;
+     }
++#elif defined(__SWITCH__)
++    // MPH-nx: the SD card's FAT refuses a rename onto an existing file
++    // (EEXIST). Move the old file aside, rename the new one in, then drop the
++    // old one; if the second rename fails, put the old file back.
++    {
++        std::filesystem::path previous = save_path;
++        previous += ".bak";
++        const bool had_old = std::filesystem::exists(save_path, ec);
++        std::remove(previous.c_str());
++        if (had_old && std::rename(save_path.c_str(), previous.c_str()) != 0) {
++            set_error(error, "cannot move old save aside: " +
++                             std::string(std::strerror(errno)));
++            return false;
++        }
++        if (std::rename(temporary.c_str(), save_path.c_str()) != 0) {
++            const int saved_errno = errno;
++            if (had_old) std::rename(previous.c_str(), save_path.c_str());
++            set_error(error, "cannot replace save file: " +
++                             std::string(std::strerror(saved_errno)));
++            return false;
++        }
++        if (had_old) std::remove(previous.c_str());
++    }
+ #else
+     if (std::rename(temporary.c_str(), save_path.c_str()) != 0) {
+         set_error(error, "cannot replace save file: " +
 diff --git a/runner/src/debug_server.cpp b/runner/src/debug_server.cpp
 index bf4ffb2..1f122af 100644
 --- a/runner/src/debug_server.cpp
@@ -13,10 +67,10 @@ index bf4ffb2..1f122af 100644
  #include "execution_region.h"
  #include "execution_region_stats.h"
 diff --git a/runner/src/frontend.cpp b/runner/src/frontend.cpp
-index 7d9d4eb..5031ad5 100644
+index 7d9d4eb..be2c474 100644
 --- a/runner/src/frontend.cpp
 +++ b/runner/src/frontend.cpp
-@@ -215,6 +215,20 @@ void observe_top_black_bands(const uint32_t* pixels, uint64_t frame,
+@@ -215,6 +215,21 @@ void observe_top_black_bands(const uint32_t* pixels, uint64_t frame,
  #include "recomp_runtime_ui.h"
  
  #include "frontend_latency.h"
@@ -29,6 +83,7 @@ index 7d9d4eb..5031ad5 100644
 +    int touch_y;
 +    int zl;
 +    int a;
++    int minus;
 +    float lx, ly;
 +} MphnxInput;
 +void mphnx_input_poll(MphnxInput* out);
@@ -37,7 +92,7 @@ index 7d9d4eb..5031ad5 100644
  
  namespace {
  
-@@ -815,6 +829,12 @@ bool sdl_init_frontend() {
+@@ -815,6 +830,12 @@ bool sdl_init_frontend() {
      return SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS |
                      SDL_INIT_GAMECONTROLLER);
  #else
@@ -50,7 +105,165 @@ index 7d9d4eb..5031ad5 100644
      return SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS |
                      SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) == 0;
  #endif
-@@ -1456,6 +1476,49 @@ void destroy_presentation(FrontendPresentation& presentation) {
+@@ -1185,6 +1206,77 @@ constexpr const char* kRuntimeMouseSensitivityKey =
+ constexpr const char* kRuntimeResumeKey = "system.resume";
+ constexpr const char* kRuntimeQuitKey = "system.quit";
+ 
++#if defined(__SWITCH__) && !defined(NDS_HAVE_SDL3)
++// ---- MPH-nx Switch state shared by presentation, input and the menu ------
++enum MphnxLayout : int { kNxStacked = 0, kNxBigTop = 1, kNxTopOnly = 2 };
++int g_nx_layout = kNxStacked;
++bool g_nx_overlay = false;      // tap minus: touch cursor (+ bottom overlay in Top only)
++bool g_nx_show_speed = false;
++char g_nx_speed_text[48] = "";
++SDL_Rect g_nx_bottom_rect{400, 360, 480, 360};  // where the bottom screen is drawn, window pixels
++constexpr const char* kNxSettingsPath = "/switch/mph-nx/mph-nx-settings.ini";
++const char* const kNxLayoutNames[] = {"Stacked", "Big top, small bottom", "Top only"};
++// Physical Switch buttons, and the SDL pad names they arrive as (SDL uses
++// positional Xbox names: Switch B is "Pad A", Switch A is "Pad B").
++const char* const kNxButtonNames[] = {"None", "A", "B", "X", "Y", "L", "R", "ZL", "ZR",
++                                      "Left stick press", "Right stick press", "+"};
++const char* const kNxButtonPad[] = {"None", "Pad B", "Pad A", "Pad Y", "Pad X", "Pad LB",
++                                    "Pad RB", "Pad LT", "Pad RT", "Pad L3", "Pad R3", "Pad Start"};
++constexpr int kNxButtonCount = 12;
++struct NxBindRow { const char* key; const char* label; const char* desc;
++                   std::string NdsMphPrimeControlBindings::*member; };
++const NxBindRow kNxBindRows[] = {
++    {"nx.bind.jump", "Jump", "Jump.", &NdsMphPrimeControlBindings::jump},
++    {"nx.bind.morph", "Morph ball", "Morph ball / unmorph.", &NdsMphPrimeControlBindings::morph_ball},
++    {"nx.bind.boost", "Boost / zoom", "Morph ball boost, or zoom.", &NdsMphPrimeControlBindings::boost_zoom},
++    {"nx.bind.visor", "Scan visor", "Toggle the scan visor.", &NdsMphPrimeControlBindings::scan_visor},
++    {"nx.bind.shoot", "Fire", "Fire weapon.", &NdsMphPrimeControlBindings::shoot},
++    {"nx.bind.scanshoot", "Scan / fire", "Scan while in scan visor, otherwise fire.", &NdsMphPrimeControlBindings::scan_shoot},
++    {"nx.bind.beam", "Beam", "Switch to the beam.", &NdsMphPrimeControlBindings::beam},
++    {"nx.bind.missile", "Missile", "Switch to missiles.", &NdsMphPrimeControlBindings::missile},
++    {"nx.bind.uiok", "Confirm", "Confirm in game menus.", &NdsMphPrimeControlBindings::ui_ok},
++    {"nx.bind.pause", "Pause (Start)", "The DS Start button: pause.", &NdsMphPrimeControlBindings::menu},
++};
++constexpr int kNxBindCount = sizeof(kNxBindRows) / sizeof(kNxBindRows[0]);
++bool g_nx_bindings_dirty = false;
++
++int nx_pad_index(const std::string& pad) {
++    for (int i = 0; i < kNxButtonCount; ++i)
++        if (binding_name_lower(pad) == binding_name_lower(kNxButtonPad[i])) return i;
++    return 0;
++}
++
++void nx_save_settings(const NdsFrontendOptions& options) {
++    FILE* f = std::fopen(kNxSettingsPath, "w");
++    if (!f) { std::fprintf(stderr, "[mph-nx] cannot write %s\n", kNxSettingsPath); return; }
++    std::fprintf(f, "layout=%d\nshow_speed=%d\n", g_nx_layout, g_nx_show_speed ? 1 : 0);
++    for (const auto& row : kNxBindRows)
++        std::fprintf(f, "%s=%s\n", row.key, (options.mph_pad_bindings.*row.member).c_str());
++    std::fclose(f);
++    std::fprintf(stderr, "[mph-nx] settings saved\n");
++}
++
++void nx_load_settings(NdsFrontendOptions& options) {
++    FILE* f = std::fopen(kNxSettingsPath, "r");
++    if (!f) return;
++    char line[160];
++    while (std::fgets(line, sizeof line, f)) {
++        std::string l(line);
++        while (!l.empty() && (l.back() == '\n' || l.back() == '\r')) l.pop_back();
++        const size_t eq = l.find('=');
++        if (eq == std::string::npos) continue;
++        const std::string k = l.substr(0, eq), v = l.substr(eq + 1);
++        if (k == "layout") g_nx_layout = std::clamp(std::atoi(v.c_str()), 0, 2);
++        else if (k == "show_speed") g_nx_show_speed = std::atoi(v.c_str()) != 0;
++        else for (const auto& row : kNxBindRows)
++            if (k == row.key) options.mph_pad_bindings.*row.member = kNxButtonPad[nx_pad_index(v)];
++    }
++    std::fclose(f);
++    std::fprintf(stderr, "[mph-nx] settings loaded: layout=%s speed=%d\n",
++                 kNxLayoutNames[g_nx_layout], g_nx_show_speed ? 1 : 0);
++}
++#endif
++
+ struct RuntimeMenuState {
+     NdsFrontendOptions* options = nullptr;
+     bool* running = nullptr;
+@@ -1235,6 +1327,15 @@ int runtime_menu_get_value(void* context, const RecompRuntimeUiItem* item,
+                            int* value_out) {
+     auto* state = static_cast<RuntimeMenuState*>(context);
+     if (!state || !state->options || !item || !value_out) return 0;
++#if defined(__SWITCH__) && !defined(NDS_HAVE_SDL3)
++    if (std::strcmp(item->key, "nx.layout") == 0) { *value_out = g_nx_layout; return 1; }
++    if (std::strcmp(item->key, "nx.speed") == 0) { *value_out = g_nx_show_speed ? 1 : 0; return 1; }
++    for (const auto& row : kNxBindRows)
++        if (std::strcmp(item->key, row.key) == 0) {
++            *value_out = nx_pad_index(state->options->mph_pad_bindings.*row.member);
++            return 1;
++        }
++#endif
+     if (std::strcmp(item->key, kRuntimeMouseSensitivityKey) == 0) {
+         *value_out = state->options->relative_mouse_sensitivity;
+         return 1;
+@@ -1246,6 +1347,29 @@ int runtime_menu_set_value(void* context, const RecompRuntimeUiItem* item,
+                            int value) {
+     auto* state = static_cast<RuntimeMenuState*>(context);
+     if (!state || !state->options || !item) return 0;
++#if defined(__SWITCH__) && !defined(NDS_HAVE_SDL3)
++    if (std::strcmp(item->key, "nx.layout") == 0) {
++        if (value < 0 || value > 2) return 0;
++        g_nx_layout = value;
++        std::fprintf(stderr, "[mph-nx] layout: %s\n", kNxLayoutNames[value]);
++        nx_save_settings(*state->options);
++        return 1;
++    }
++    if (std::strcmp(item->key, "nx.speed") == 0) {
++        g_nx_show_speed = value != 0;
++        nx_save_settings(*state->options);
++        return 1;
++    }
++    for (const auto& row : kNxBindRows)
++        if (std::strcmp(item->key, row.key) == 0) {
++            if (value < 0 || value >= kNxButtonCount) return 0;
++            state->options->mph_pad_bindings.*row.member = kNxButtonPad[value];
++            g_nx_bindings_dirty = true;
++            std::fprintf(stderr, "[mph-nx] %s -> %s\n", row.label, kNxButtonNames[value]);
++            nx_save_settings(*state->options);
++            return 1;
++        }
++#endif
+     if (std::strcmp(item->key, kRuntimeMouseSensitivityKey) == 0) {
+         if (value < 10 || value > 400) return 0;
+         state->options->relative_mouse_sensitivity =
+@@ -1267,6 +1391,17 @@ int runtime_menu_run_action(void* context, const RecompRuntimeUiItem* item) {
+         if (state->running) *state->running = false;
+         return 1;
+     }
++#if defined(__SWITCH__) && !defined(NDS_HAVE_SDL3)
++    if (std::strcmp(item->key, "nx.bind.reset") == 0 && state->options) {
++        const NdsMphPrimeControlBindings defaults = nds_default_mph_pad_bindings();
++        for (const auto& row : kNxBindRows)
++            state->options->mph_pad_bindings.*row.member = defaults.*row.member;
++        g_nx_bindings_dirty = true;
++        std::fprintf(stderr, "[mph-nx] controls reset to defaults\n");
++        nx_save_settings(*state->options);
++        return 1;
++    }
++#endif
+     return 0;
+ }
+ 
+@@ -1323,6 +1458,15 @@ bool runtime_menu_key_input(SDL_Scancode scancode,
+ bool runtime_menu_controller_input(SDL_GameControllerButton button,
+                                    RecompRuntimeUiInput* input) {
+     if (!input) return false;
++#if defined(__SWITCH__) && !defined(NDS_HAVE_SDL3)
++    // MPH-nx: plus is the DS Start button (pause) and never opens the menu;
++    // hold minus opens it. Nintendo layout: Switch A (SDL "B") accepts,
++    // Switch B (SDL "A") goes back.
++    if (button == SDL_CONTROLLER_BUTTON_START || button == SDL_CONTROLLER_BUTTON_BACK)
++        return false;
++    if (button == SDL_CONTROLLER_BUTTON_B) { *input = RECOMP_RUNTIME_UI_INPUT_ACCEPT; return true; }
++    if (button == SDL_CONTROLLER_BUTTON_A) { *input = RECOMP_RUNTIME_UI_INPUT_BACK; return true; }
++#endif
+     switch (button) {
+         case SDL_CONTROLLER_BUTTON_START:
+             *input = RECOMP_RUNTIME_UI_INPUT_TOGGLE;
+@@ -1456,6 +1600,49 @@ void destroy_presentation(FrontendPresentation& presentation) {
      presentation.windows[1] = nullptr;
  }
  
@@ -100,7 +313,7 @@ index 7d9d4eb..5031ad5 100644
  SDL_Renderer* create_renderer(SDL_Window* window) {
  #if defined(NDS_HAVE_SDL3)
      // Driver order is NOT left to SDL3's default here. SDL3 orders its Windows
-@@ -1518,6 +1581,16 @@ SDL_Window* create_window(const char* title, int x, int y, int w, int h,
+@@ -1518,6 +1705,16 @@ SDL_Window* create_window(const char* title, int x, int y, int w, int h,
          SDL_SetWindowPosition(window, x, y);
      return window;
  #else
@@ -117,11 +330,21 @@ index 7d9d4eb..5031ad5 100644
      return SDL_CreateWindow(title, x, y, w, h, static_cast<uint32_t>(flags));
  #endif
  }
-@@ -1897,9 +1970,13 @@ bool create_presentation(const NdsFrontendOptions& options,
+@@ -1891,15 +2088,23 @@ bool create_presentation(const NdsFrontendOptions& options,
+             !presentation.separate && screen == 0
+                 ? kScreenHeight * 2 : kScreenHeight;
+         if (screen == 0 || presentation.separate) {
++#if !defined(__SWITCH__)
+             set_render_logical_size(
+                 presentation.renderers[screen],
+                 presentation.separate
                      ? presentation.screen_widths[screen]
                      : presentation.canvas_width,
                  logical_height);
 -#if !defined(NDS_HAVE_SDL3)
++#else
++            (void)logical_height;
++#endif
 +#if !defined(NDS_HAVE_SDL3) && !defined(__SWITCH__)
              SDL_RenderSetIntegerScale(presentation.renderers[screen],
                                        SDL_TRUE);
@@ -132,7 +355,95 @@ index 7d9d4eb..5031ad5 100644
  #endif
          }
          presentation.textures[screen] = SDL_CreateTexture(
-@@ -2169,6 +2246,9 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
+@@ -2077,6 +2282,39 @@ struct OwnedPresentationFrame {
+ };
+ #endif
+ 
++#if defined(__SWITCH__) && !defined(NDS_HAVE_SDL3)
++// MPH-nx: text at an integer scale, using the notice font.
++void nx_draw_text(SDL_Renderer* renderer, int x, int y, int scale, const char* text) {
++    const int len = static_cast<int>(std::strlen(text));
++    const SDL_Rect bg{x - scale * 2, y - scale * 2, len * 6 * scale + scale * 3, 11 * scale};
++    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
++    SDL_RenderFillRect(renderer, &bg);
++    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
++    for (int i = 0; i < len; ++i) {
++        const char* glyph = notice_glyph(text[i]);
++        for (int gy = 0; gy < 7; ++gy)
++            for (int gx = 0; gx < 5; ++gx)
++                if (glyph[gy * 5 + gx] == '1') {
++                    const SDL_Rect px{x + (i * 6 + gx) * scale, y + gy * scale, scale, scale};
++                    SDL_RenderFillRect(renderer, &px);
++                }
++    }
++}
++
++// MPH-nx: a touch cursor that stays visible on light and dark screens.
++void nx_draw_cursor(SDL_Renderer* renderer, const SDL_Rect& screen, float sx, float sy) {
++    const int x = screen.x + static_cast<int>(std::lround(sx * screen.w / 256.0f));
++    const int y = screen.y + static_cast<int>(std::lround(sy * screen.h / 192.0f));
++    const int r = std::max(8, screen.w / 40), t = std::max(2, screen.w / 240);
++    const SDL_Rect black[] = {{x - r - 1, y - t, 2 * r + 3, 2 * t + 1}, {x - t, y - r - 1, 2 * t + 1, 2 * r + 3}};
++    const SDL_Rect white[] = {{x - r, y - t / 2, 2 * r + 1, t}, {x - t / 2, y - r, t, 2 * r + 1}};
++    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
++    for (const auto& b : black) SDL_RenderFillRect(renderer, &b);
++    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
++    for (const auto& w : white) SDL_RenderFillRect(renderer, &w);
++}
++#endif
++
+ PresentationTicks present_screens(FrontendPresentation& presentation,
+                                   const uint32_t* top_pixels,
+                                   int top_width,
+@@ -2152,6 +2390,47 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
+     if (!presentation.separate) {
+         SDL_Renderer* renderer = presentation.renderers[0];
+         start = SDL_GetPerformanceCounter();
++#if defined(__SWITCH__) && !defined(NDS_HAVE_SDL3)
++        {
++            // MPH-nx layouts, in 1280x720 window pixels. DS screens are 4:3.
++            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
++            SDL_RenderClear(renderer);
++            SDL_Rect top_rect{400, 0, 480, 360}, bottom_rect{400, 360, 480, 360};
++            bool draw_bottom = true, dim = false;
++            if (g_nx_layout == kNxBigTop) {
++                top_rect = {0, 0, 960, 720};
++                bottom_rect = {960, 480, 320, 240};
++            } else if (g_nx_layout == kNxTopOnly) {
++                top_rect = {160, 0, 960, 720};
++                if (g_nx_overlay) { bottom_rect = {213, 40, 853, 640}; dim = true; }
++                else draw_bottom = false;
++            }
++            render_screen(presentation, 0, top_rect);
++            if (dim) {
++                SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
++                SDL_SetRenderDrawColor(renderer, 0, 0, 0, 150);
++                SDL_RenderFillRect(renderer, nullptr);
++                SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
++            }
++            if (draw_bottom) {
++                render_screen(presentation, 1, bottom_rect);
++                if (virtual_stylus_visible)
++                    nx_draw_cursor(renderer, bottom_rect, virtual_stylus_x, virtual_stylus_y);
++                draw_savestate_notice(renderer, bottom_rect, savestate_notice);
++                g_nx_bottom_rect = bottom_rect;
++            } else {
++                g_nx_bottom_rect = {0, 0, 0, 0};
++            }
++            if (g_nx_show_speed && g_nx_speed_text[0])
++                nx_draw_text(renderer, 12, 12, 3, g_nx_speed_text);
++        }
++        ticks.draw += SDL_GetPerformanceCounter() - start;
++        mphnx_maybe_snapshot(renderer);
++        start = SDL_GetPerformanceCounter();
++        SDL_RenderPresent(renderer);
++        ticks.swap += SDL_GetPerformanceCounter() - start;
++        return ticks;
++#endif
+         SDL_SetRenderDrawColor(renderer, 20, 20, 20, 255);
+         SDL_RenderClear(renderer);
+         const SDL_Rect top_rect{
+@@ -2169,6 +2448,9 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
                                  virtual_stylus_x, virtual_stylus_y);
          draw_savestate_notice(renderer, bottom_rect, savestate_notice);
          ticks.draw += SDL_GetPerformanceCounter() - start;
@@ -142,7 +453,66 @@ index 7d9d4eb..5031ad5 100644
          start = SDL_GetPerformanceCounter();
          SDL_RenderPresent(renderer);
          ticks.swap += SDL_GetPerformanceCounter() - start;
-@@ -2561,6 +2641,14 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -2446,6 +2728,9 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+         options.virtual_stylus.enabled && !mph_prime_controls_available;
+     MphPrimeBindingSet mph_prime_bindings{};
+     MphPadBindingSet mph_pad_bindings{};
++#if defined(__SWITCH__) && !defined(NDS_HAVE_SDL3)
++    nx_load_settings(options);
++#endif
+     if (mph_prime_controls_available) {
+         mph_prime_bindings = make_mph_prime_bindings(options.mph_bindings);
+         mph_pad_bindings = make_mph_pad_bindings(options.mph_pad_bindings);
+@@ -2543,6 +2828,37 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+     runtime_menu_config.items = runtime_menu_items;
+     runtime_menu_config.item_count =
+         sizeof(runtime_menu_items) / sizeof(runtime_menu_items[0]);
++#if defined(__SWITCH__) && !defined(NDS_HAVE_SDL3)
++    static std::vector<RecompRuntimeUiItem> nx_menu_items;
++    nx_menu_items.clear();
++    nx_menu_items.push_back({"nx.layout", "Display", "Screen layout",
++        "Stacked, big top screen with a small bottom one, or top only (tap minus for the bottom screen).",
++        RECOMP_RUNTIME_UI_CHOICE, 0, 2, 1, kNxLayoutNames, 3, nullptr});
++    nx_menu_items.push_back({"nx.speed", "Display", "Show speed",
++        "Frames per second and game speed in the corner.",
++        RECOMP_RUNTIME_UI_BOOL, 0, 1, 1, nullptr, 0, nullptr});
++    for (const auto& row : kNxBindRows)
++        nx_menu_items.push_back({row.key, "Controls", row.label, row.desc,
++            RECOMP_RUNTIME_UI_CHOICE, 0, kNxButtonCount - 1, 1,
++            kNxButtonNames, static_cast<size_t>(kNxButtonCount), nullptr});
++    nx_menu_items.push_back({"nx.bind.reset", "Controls", "Reset controls",
++        "Put every button back to the default layout.",
++        RECOMP_RUNTIME_UI_ACTION, 0, 0, 0, nullptr, 0, nullptr});
++    nx_menu_items.push_back({kRuntimeResumeKey, "System", "Resume game",
++        "Close the menu and return to the game.",
++        RECOMP_RUNTIME_UI_ACTION, 0, 0, 0, nullptr, 0, nullptr});
++    nx_menu_items.push_back({kRuntimeQuitKey, "System", "Quit",
++        "Quit MPH-nx. Save in the game first.",
++        RECOMP_RUNTIME_UI_ACTION, 0, 0, 0, nullptr, 0, nullptr});
++    runtime_menu_config.title = "MPH-nx";
++#if defined(MPHNX_VERSION)
++    runtime_menu_config.subtitle = "Switch " MPHNX_VERSION;
++#else
++    runtime_menu_config.subtitle = "Switch";
++#endif
++    runtime_menu_config.items = nx_menu_items.data();
++    runtime_menu_config.item_count = nx_menu_items.size();
++#endif
+     runtime_menu_config.callbacks.context = &runtime_menu_state;
+     runtime_menu_config.callbacks.get_value = runtime_menu_get_value;
+     runtime_menu_config.callbacks.set_value = runtime_menu_set_value;
+@@ -2552,6 +2868,10 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+     runtime_menu_config.theme = "nds";
+     runtime_menu_config.accept_label = "A / Enter";
+     runtime_menu_config.back_label = "B / Backspace";
++#if defined(__SWITCH__) && !defined(NDS_HAVE_SDL3)
++    runtime_menu_config.accept_label = "A";
++    runtime_menu_config.back_label = "B";
++#endif
+     RecompRuntimeUi* runtime_ui =
+         recomp_runtime_ui_create(&runtime_menu_config);
+     if (!runtime_ui) {
+@@ -2561,6 +2881,14 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
      bool mouse_down = false;
      bool touch_release_pending = false;
      uint32_t touch_frames_held = 0;
@@ -157,7 +527,7 @@ index 7d9d4eb..5031ad5 100644
      int64_t relative_delta_x = 0;
      int64_t relative_delta_y = 0;
      uint64_t relative_direct_writes = 0;
-@@ -3257,9 +3345,34 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3257,9 +3585,77 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                  relative_mouse_selftest_stage = 10;
              }
          }
@@ -166,7 +536,50 @@ index 7d9d4eb..5031ad5 100644
 +        MphnxInput nx_in{};
 +        mphnx_input_poll(&nx_in);
 +        const bool nx_cursor_was_active = nx_cursor_active;
-+        nx_cursor_active = nx_in.zl != 0 && !runtime_menu_open();
++        {
++            // Tap minus: touch cursor on/off (and the bottom-screen overlay
++            // in Top only). Hold minus half a second: the MPH-nx menu.
++            static bool minus_prev = false, minus_long = false;
++            static uint64_t minus_down_ms = 0;
++            const uint64_t now_ms = SDL_GetTicks64();
++            if (nx_in.minus && !minus_prev) { minus_down_ms = now_ms; minus_long = false; }
++            if (nx_in.minus && !minus_long && now_ms - minus_down_ms >= 500) {
++                minus_long = true;
++                const bool was_open = runtime_menu_open();
++                if (runtime_ui &&
++                    recomp_runtime_ui_handle_input(runtime_ui, RECOMP_RUNTIME_UI_INPUT_TOGGLE, 1, 0))
++                    finish_runtime_menu_input(was_open);
++                std::fprintf(stderr, "[mph-nx] menu %s\n", runtime_menu_open() ? "open" : "closed");
++            }
++            if (!nx_in.minus && minus_prev && !minus_long && !runtime_menu_open())
++                g_nx_overlay = !g_nx_overlay;
++            minus_prev = nx_in.minus != 0;
++        }
++        if (g_nx_bindings_dirty) {
++            g_nx_bindings_dirty = false;
++            const MphPadBindingSet rebuilt = make_mph_pad_bindings(options.mph_pad_bindings);
++            if (rebuilt.valid) {
++                mph_pad_bindings = rebuilt;
++                clear_mph_prime_controls();
++                publish_keys();
++            }
++        }
++        nx_cursor_active = g_nx_overlay && !runtime_menu_open();
++        {
++            // Speed readout: DS frames per second and speed against 59.83 Hz.
++            static uint64_t speed_t0 = 0;
++            static uint32_t speed_frames = 0;
++            const uint64_t t = SDL_GetTicks64();
++            if (!speed_t0) speed_t0 = t;
++            ++speed_frames;
++            if (t - speed_t0 >= 1000) {
++                const double fps = speed_frames * 1000.0 / static_cast<double>(t - speed_t0);
++                std::snprintf(g_nx_speed_text, sizeof g_nx_speed_text,
++                              "%.1f FPS  %.2fX", fps, fps / 59.8261);
++                speed_t0 = t;
++                speed_frames = 0;
++            }
++        }
 +        if (nx_cursor_active != nx_cursor_was_active)
 +            std::fprintf(stderr, "[mph-nx] touch cursor %s at %d,%d\n",
 +                         nx_cursor_active ? "on" : "off",
@@ -192,18 +605,21 @@ index 7d9d4eb..5031ad5 100644
              if (event.type == SDL_QUIT) {
                  release_relative_mouse();
                  running = false;
-@@ -3451,6 +3564,10 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3451,6 +3847,13 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                  clear_virtual_stylus();
                  publish_keys();
              }
 +#if defined(__SWITCH__) && !defined(NDS_HAVE_SDL3)
++            if ((event.type == SDL_CONTROLLERBUTTONDOWN || event.type == SDL_CONTROLLERBUTTONUP) &&
++                sdl_controller_button(event) == SDL_CONTROLLER_BUTTON_BACK)
++                continue;
 +            if (nx_cursor_active && event.type == SDL_CONTROLLERBUTTONDOWN)
 +                continue;
 +#endif
              if (event.type == SDL_CONTROLLERBUTTONDOWN ||
                  event.type == SDL_CONTROLLERBUTTONUP) {
                  RecompRuntimeUiInput menu_input{};
-@@ -3764,10 +3881,20 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3764,10 +4167,20 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                          publish_keys();
                      }
                  };
@@ -224,7 +640,7 @@ index 7d9d4eb..5031ad5 100644
              }
  
              if (!menu_open && virtual_stylus_available) {
-@@ -3818,7 +3945,11 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3818,7 +4231,11 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                  }
              }
  
@@ -237,7 +653,7 @@ index 7d9d4eb..5031ad5 100644
                  // Right stick -> camera aim; triggers act as bindable
                  // pseudo-buttons (defaults: RT shoot, LT scan-fire).
                  const float rx = SDL_GameControllerGetAxis(
-@@ -3989,6 +4120,87 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3989,6 +4406,85 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                      nds_set_touch(128, 96, true);
              }
          }
@@ -264,24 +680,22 @@ index 7d9d4eb..5031ad5 100644
 +                want_y = static_cast<int>(std::lround(nx_cursor_y));
 +                source = "cursor";
 +            } else if (nx_in.touch_count > 0) {
-+                float lx = 0.0f, ly = 0.0f;
-+                SDL_RenderWindowToLogical(presentation.renderers[0],
-+                                          nx_in.touch_x, nx_in.touch_y, &lx, &ly);
-+                const float bl = static_cast<float>(bottom_content_left);
-+                const float bt = presentation.separate
-+                    ? 0.0f : static_cast<float>(kScreenHeight);
-+                if (lx >= bl && lx < bl + kScreenWidth &&
-+                    ly >= bt && ly < bt + kScreenHeight) {
++                const SDL_Rect br = g_nx_bottom_rect;
++                const float lx = static_cast<float>(nx_in.touch_x);
++                const float ly = static_cast<float>(nx_in.touch_y);
++                if (br.w > 0 && br.h > 0 &&
++                    nx_in.touch_x >= br.x && nx_in.touch_x < br.x + br.w &&
++                    nx_in.touch_y >= br.y && nx_in.touch_y < br.y + br.h) {
 +                    want = true;
-+                    want_x = static_cast<int>(lx - bl);
-+                    want_y = static_cast<int>(ly - bt);
++                    want_x = (nx_in.touch_x - br.x) * kScreenWidth / br.w;
++                    want_y = (nx_in.touch_y - br.y) * kScreenHeight / br.h;
 +                } else if (!nx_touch_down && nx_touch_count < 200) {
 +                    static int last_miss_x = -1, last_miss_y = -1;
 +                    if (nx_in.touch_x != last_miss_x || nx_in.touch_y != last_miss_y) {
 +                        last_miss_x = nx_in.touch_x; last_miss_y = nx_in.touch_y;
 +                        std::fprintf(stderr,
-+                            "[mph-nx] touch outside bottom screen: switch %d,%d -> logical %.1f,%.1f\n",
-+                            nx_in.touch_x, nx_in.touch_y, lx, ly);
++                            "[mph-nx] touch outside bottom screen: switch %.0f,%.0f\n",
++                            lx, ly);
 +                    }
 +                }
 +            }
@@ -325,7 +739,7 @@ index 7d9d4eb..5031ad5 100644
          if (options.custom_gamepad_bindings) {
              // Button events handle digital bindings; poll signed axes here.
              // Each row has one source, so clearing an axis row cannot release
-@@ -4186,8 +4398,9 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -4186,8 +4682,9 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                  presentation, blend_cache.blended[0].data(), top_width,
                  blend_cache.blended[1].data(), bottom_width,
                  runtime_ui,
@@ -337,7 +751,7 @@ index 7d9d4eb..5031ad5 100644
                  savestate_notice.empty() ? nullptr : savestate_notice.c_str());
              if (!synthetic_ticks.ok) {
                  compute_failed = true;
-@@ -4210,14 +4423,18 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -4210,14 +4707,18 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
              presentation, top_pixels, top_width,
              bottom_pixels, bottom_width,
              runtime_ui,
@@ -389,7 +803,7 @@ index 56dbb80..2640c44 100644
  
      if (info.cpu_brand.empty()) info.cpu_brand = "unknown";
 diff --git a/runner/src/io.cpp b/runner/src/io.cpp
-index 20544a0..13bb2f2 100644
+index 20544a0..f7e6489 100644
 --- a/runner/src/io.cpp
 +++ b/runner/src/io.cpp
 @@ -1,5 +1,6 @@
@@ -431,7 +845,7 @@ index 20544a0..13bb2f2 100644
  
  // IR-cartridge SPI front end (melonDS CartRetailIR::SPIWrite). Byte 0 of a
  // transfer is the IR command and answers 0; 0x00 passes the remainder through
-@@ -2012,6 +2031,15 @@ void nds_io_set_cartridge_save_path(const char* path) {
+@@ -2012,6 +2031,20 @@ void nds_io_set_cartridge_save_path(const char* path) {
      g_cart_save_path = path ? path : "";
  }
  
@@ -439,8 +853,13 @@ index 20544a0..13bb2f2 100644
 +void nds_io_cartridge_save_maybe_flush() {
 +    if (!g_cart_backup.dirty || g_cart_save_path.empty()) return;
 +    const auto now = std::chrono::steady_clock::now();
-+    if (now - g_cart_last_spi_write > std::chrono::milliseconds(500))
-+        nds_io_flush_cartridge_save();
++    // A failed write waits 10 s before the next try instead of retrying
++    // (and rewriting 256 KB) every frame.
++    static std::chrono::steady_clock::time_point next_try{};
++    if (now < next_try) return;
++    if (now - g_cart_last_spi_write > std::chrono::milliseconds(500) &&
++        !nds_io_flush_cartridge_save())
++        next_try = now + std::chrono::seconds(10);
 +}
 +#endif
 +

@@ -178,6 +178,7 @@ void mphnx_input_poll(MphnxInput* out) {
     const u64 held = padGetButtons(&pad);
     out->zl = (held & HidNpadButton_ZL) != 0;
     out->a = (held & HidNpadButton_A) != 0;
+    out->minus = (held & HidNpadButton_Minus) != 0;
     const HidAnalogStickState ls = padGetStickPos(&pad, 0);
     out->lx = (float)ls.x / 32767.0f;
     out->ly = -(float)ls.y / 32767.0f;

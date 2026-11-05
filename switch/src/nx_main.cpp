@@ -26,7 +26,7 @@
 int nds_upstream_main(int argc, char** argv);  // upstream main.cpp, renamed at compile time
 
 #ifndef MPHNX_VERSION
-#define MPHNX_VERSION "switch-test4"
+#define MPHNX_VERSION "switch-test5"
 #endif
 
 static const char* kAppDir = "/switch/mph-nx";
@@ -214,6 +214,38 @@ static std::string find_rom() {
 // Simple on-screen message when the app cannot start
 // ---------------------------------------------------------------------------
 
+// switch-test4 and earlier could not replace mph.sav (FAT refuses a rename
+// onto an existing file), so the newest save was left in mph.sav.tmp. Move it
+// into place once, keeping the old file as mph.sav.old.
+static void recover_pending_save(const std::string& app) {
+    const std::string sav = app + "/mph.sav";
+    const std::string tmp = sav + ".tmp";
+    struct stat st_tmp{}, st_sav{};
+    if (stat(tmp.c_str(), &st_tmp) != 0) return;
+    if (st_tmp.st_size != 262144) {
+        std::printf("[mph-nx] save recovery: ignoring %s (%lld bytes)\n",
+                    tmp.c_str(), (long long)st_tmp.st_size);
+        return;
+    }
+    const bool have_sav = stat(sav.c_str(), &st_sav) == 0;
+    if (have_sav) {
+        const std::string old = sav + ".old";
+        std::remove(old.c_str());
+        if (std::rename(sav.c_str(), old.c_str()) != 0) {
+            std::printf("[mph-nx] save recovery: cannot move mph.sav aside (%s)\n",
+                        std::strerror(errno));
+            return;
+        }
+    }
+    if (std::rename(tmp.c_str(), sav.c_str()) != 0) {
+        std::printf("[mph-nx] save recovery: rename failed (%s)\n", std::strerror(errno));
+        if (have_sav) std::rename((sav + ".old").c_str(), sav.c_str());
+        return;
+    }
+    std::printf("[mph-nx] save recovery: moved mph.sav.tmp to mph.sav%s\n",
+                have_sav ? " (previous kept as mph.sav.old)" : "");
+}
+
 static void show_message_and_wait(const char* text) {
     consoleInit(nullptr);
     std::printf("\n  MPH-nx (%s)\n\n", MPHNX_VERSION);
@@ -287,6 +319,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     std::printf("[mph-nx] rom: %s\n", rom.c_str());
+    recover_pending_save(kAppDir);
 
     nx_clocks_apply();
 

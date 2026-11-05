@@ -13,7 +13,9 @@ if(NOT NINTENDO_SWITCH)
     message(FATAL_ERROR "MPH-nx: configure with the devkitPro Switch toolchain")
 endif()
 
-set(MPHNX_VERSION "switch-test4" CACHE STRING "Version string shown in logs and hbmenu")
+set(MPHNX_VERSION "switch-test5" CACHE STRING "Version string shown in logs and hbmenu")
+set(MPHNX_TITLE "MPH-nx" CACHE STRING "Name shown in hbmenu")
+option(MPHNX_PIE_LIBS "Compile the runner's static libraries (game banks included) as -fPIE instead of -fPIC" OFF)
 set(NDSRECOMP_ROOT "" CACHE PATH "Pinned, patched ndsrecomp checkout")
 if(NOT EXISTS "${NDSRECOMP_ROOT}/runner/CMakeLists.txt")
     message(FATAL_ERROR "MPH-nx: NDSRECOMP_ROOT does not point at an ndsrecomp checkout")
@@ -34,6 +36,21 @@ set(NDSRECOMP_COMPILER_CACHE OFF CACHE STRING "" FORCE)
 add_subdirectory("${NDSRECOMP_ROOT}/runner" "${CMAKE_BINARY_DIR}/runner")
 
 set(_runner_dir "${NDSRECOMP_ROOT}/runner")
+
+# Speed experiment (switch-test5 build B). CMake builds static libraries as
+# -fPIC, which reaches every global (guest registers, cycle counters, flags)
+# through the GOT: one extra load per access, several per guest instruction.
+# They only ever link into this PIE executable, so -fPIE is valid and lets the
+# compiler address those globals directly.
+if(MPHNX_PIE_LIBS)
+    foreach(_lib nds_banks nds_support nds_armv4t)
+        if(TARGET ${_lib})
+            set_target_properties(${_lib} PROPERTIES POSITION_INDEPENDENT_CODE OFF)
+            target_compile_options(${_lib} PRIVATE -fPIE)
+        endif()
+    endforeach()
+    message(STATUS "MPH-nx: static libraries built -fPIE")
+endif()
 
 # Upstream main() becomes nds_upstream_main(); the Switch entry point calls it.
 set_source_files_properties("${_runner_dir}/src/main.cpp"
@@ -61,7 +78,7 @@ endif()
 
 nx_generate_nacp(
     OUTPUT "${CMAKE_BINARY_DIR}/mph-nx.nacp"
-    NAME "MPH-nx"
+    NAME "${MPHNX_TITLE}"
     AUTHOR "FurryLilManChild"
     VERSION "${MPHNX_VERSION}")
 
