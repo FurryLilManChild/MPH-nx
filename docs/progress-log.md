@@ -2,6 +2,12 @@
 
 Newest first.
 
+## 2026-11-04: switch-test2 (display fix)
+
+- Changes: Switch window created at 1280x720 and never resized; no integer scale; renderer name and output size logged; BMP snapshots at frames 120, 600, 1800, 3600 in /switch/mph-nx/logs; --relative-mouse-touch on (enables Prime controls).
+- build.sh now fails if the NRO is not newer than the run start (the first test2 attempt silently skipped compiling when Docker had stopped).
+- mph-nx.nro sha256 60a0e8e2eed9beb3cbf6b4feed8e55da78332e88432f7c198ff53a130d5fc726, verified on the PC. Delivered with SendUserFile plus device_commit_files (shell rejoin of 18 MB parts slowed to about 250 KB/s).
+
 ## 2026-11-04: switch-test1 results
 
 - Ran without crashing; audio played (choppy); button presses were recognized (intro skipped to the title screen). TV showed black the whole time.

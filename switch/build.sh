@@ -34,6 +34,7 @@ ROM_SHA1=90164d1ac127ee5f9815ea4ae7de798c7b5fc629
 say() { echo "[mph-nx build] $*"; }
 die() { echo "[mph-nx build] ERROR: $*" >&2; exit 1; }
 
+STAMP="$(mktemp)"  # build start; the NRO must be newer than this
 say "1/6 checking pins"
 [ "$(git -C "$NDSRECOMP_ROOT" rev-parse HEAD)" = "$NDSRECOMP_PIN" ] || die "ndsrecomp is not on $NDSRECOMP_PIN"
 [ "$(git -C "$MPH_ROOT" rev-parse HEAD)" = "$MPH_PIN" ] || die "MetroidPrimeHuntersRecomp is not on $MPH_PIN"
@@ -94,6 +95,7 @@ say "6/6 checking the artifact"
 NRO="$BUILD_DIR/switch/mph-nx.nro"
 ELF="$BUILD_DIR/switch/runner/nds_runner.elf"
 [ -f "$NRO" ] || die "no NRO produced"
+[ "$NRO" -nt "$STAMP" ] || die "NRO was not rebuilt by this run (stale file)"
 SIZE=$(stat -c %s "$NRO")
 say "  mph-nx.nro: $((SIZE / 1048576)) MB"
 [ "$SIZE" -gt $((50 * 1048576)) ] || die "NRO is suspiciously small (banks missing?)"
