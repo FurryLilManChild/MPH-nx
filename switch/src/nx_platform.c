@@ -152,3 +152,33 @@ const char* nx_clocks_status(void) {
     }
     return g_clk_status;
 }
+
+// ---- MPH-nx direct input (touchscreen and touch-cursor buttons) ----------
+// SDL's own touch path only runs while a window has focus and no text input
+// is active, and drops touches silently otherwise. Reading HID directly keeps
+// touch independent of that. The pad state is our own; SDL configured the
+// npad styles, and reading shared memory does not disturb SDL's reads.
+void mphnx_input_poll(MphnxInput* out) {
+    static PadState pad;
+    static int ready = 0;
+    if (!ready) {
+        hidInitializeTouchScreen();
+        padInitializeDefault(&pad);
+        ready = 1;
+    }
+    out->touch_count = 0;
+    out->touch_x = out->touch_y = 0;
+    HidTouchScreenState ts = {0};
+    if (hidGetTouchScreenStates(&ts, 1) && ts.count > 0) {
+        out->touch_count = (int)ts.count;
+        out->touch_x = (int)ts.touches[0].x;
+        out->touch_y = (int)ts.touches[0].y;
+    }
+    padUpdate(&pad);
+    const u64 held = padGetButtons(&pad);
+    out->zl = (held & HidNpadButton_ZL) != 0;
+    out->a = (held & HidNpadButton_A) != 0;
+    const HidAnalogStickState ls = padGetStickPos(&pad, 0);
+    out->lx = (float)ls.x / 32767.0f;
+    out->ly = -(float)ls.y / 32767.0f;
+}

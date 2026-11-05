@@ -13,10 +13,31 @@ index bf4ffb2..1f122af 100644
  #include "execution_region.h"
  #include "execution_region_stats.h"
 diff --git a/runner/src/frontend.cpp b/runner/src/frontend.cpp
-index 7d9d4eb..2bfb10e 100644
+index 7d9d4eb..5031ad5 100644
 --- a/runner/src/frontend.cpp
 +++ b/runner/src/frontend.cpp
-@@ -815,6 +815,12 @@ bool sdl_init_frontend() {
+@@ -215,6 +215,20 @@ void observe_top_black_bands(const uint32_t* pixels, uint64_t frame,
+ #include "recomp_runtime_ui.h"
+ 
+ #include "frontend_latency.h"
++#if defined(__SWITCH__) && !defined(NDS_HAVE_SDL3)
++// MPH-nx: direct Horizon input, implemented in switch/src/nx_platform.c.
++extern "C" {
++typedef struct MphnxInput {
++    int touch_count;
++    int touch_x;
++    int touch_y;
++    int zl;
++    int a;
++    float lx, ly;
++} MphnxInput;
++void mphnx_input_poll(MphnxInput* out);
++}
++#endif
+ 
+ namespace {
+ 
+@@ -815,6 +829,12 @@ bool sdl_init_frontend() {
      return SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS |
                      SDL_INIT_GAMECONTROLLER);
  #else
@@ -29,7 +50,7 @@ index 7d9d4eb..2bfb10e 100644
      return SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS |
                      SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) == 0;
  #endif
-@@ -1456,6 +1462,49 @@ void destroy_presentation(FrontendPresentation& presentation) {
+@@ -1456,6 +1476,49 @@ void destroy_presentation(FrontendPresentation& presentation) {
      presentation.windows[1] = nullptr;
  }
  
@@ -79,7 +100,7 @@ index 7d9d4eb..2bfb10e 100644
  SDL_Renderer* create_renderer(SDL_Window* window) {
  #if defined(NDS_HAVE_SDL3)
      // Driver order is NOT left to SDL3's default here. SDL3 orders its Windows
-@@ -1518,6 +1567,16 @@ SDL_Window* create_window(const char* title, int x, int y, int w, int h,
+@@ -1518,6 +1581,16 @@ SDL_Window* create_window(const char* title, int x, int y, int w, int h,
          SDL_SetWindowPosition(window, x, y);
      return window;
  #else
@@ -96,7 +117,7 @@ index 7d9d4eb..2bfb10e 100644
      return SDL_CreateWindow(title, x, y, w, h, static_cast<uint32_t>(flags));
  #endif
  }
-@@ -1897,9 +1956,13 @@ bool create_presentation(const NdsFrontendOptions& options,
+@@ -1897,9 +1970,13 @@ bool create_presentation(const NdsFrontendOptions& options,
                      ? presentation.screen_widths[screen]
                      : presentation.canvas_width,
                  logical_height);
@@ -111,7 +132,7 @@ index 7d9d4eb..2bfb10e 100644
  #endif
          }
          presentation.textures[screen] = SDL_CreateTexture(
-@@ -2169,6 +2232,9 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
+@@ -2169,6 +2246,9 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
                                  virtual_stylus_x, virtual_stylus_y);
          draw_savestate_notice(renderer, bottom_rect, savestate_notice);
          ticks.draw += SDL_GetPerformanceCounter() - start;
@@ -121,55 +142,213 @@ index 7d9d4eb..2bfb10e 100644
          start = SDL_GetPerformanceCounter();
          SDL_RenderPresent(renderer);
          ticks.swap += SDL_GetPerformanceCounter() - start;
-@@ -3260,6 +3326,47 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -2561,6 +2641,14 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+     bool mouse_down = false;
+     bool touch_release_pending = false;
+     uint32_t touch_frames_held = 0;
++    // MPH-nx touch state (direct Switch touchscreen and the ZL touch cursor).
++    bool nx_cursor_active = false;
++    float nx_cursor_x = 128.0f, nx_cursor_y = 96.0f;
++    bool nx_touch_down = false;
++    uint32_t nx_touch_frames = 0;
++    uint16_t nx_touch_last_x = 0, nx_touch_last_y = 0;
++    uint32_t nx_touch_count = 0;
++    uint32_t nx_sdl_finger_events = 0, nx_sdl_finger_downs = 0;
+     int64_t relative_delta_x = 0;
+     int64_t relative_delta_y = 0;
+     uint64_t relative_direct_writes = 0;
+@@ -3257,9 +3345,34 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+                 relative_mouse_selftest_stage = 10;
+             }
+         }
++#if defined(__SWITCH__) && !defined(NDS_HAVE_SDL3)
++        // MPH-nx: read the touchscreen and cursor buttons once per frame.
++        MphnxInput nx_in{};
++        mphnx_input_poll(&nx_in);
++        const bool nx_cursor_was_active = nx_cursor_active;
++        nx_cursor_active = nx_in.zl != 0 && !runtime_menu_open();
++        if (nx_cursor_active != nx_cursor_was_active)
++            std::fprintf(stderr, "[mph-nx] touch cursor %s at %d,%d\n",
++                         nx_cursor_active ? "on" : "off",
++                         static_cast<int>(nx_cursor_x),
++                         static_cast<int>(nx_cursor_y));
++#endif
          SDL_Event event{};
          while (SDL_PollEvent(&event)) {
              convert_mouse_event_to_logical_coordinates(event, presentation);
 +#if defined(__SWITCH__) && !defined(NDS_HAVE_SDL3)
-+            // MPH-nx: the Switch touchscreen drives the DS touchscreen directly.
-+            // SDL's touch-to-mouse emulation is off (sdl_init_frontend), so a
-+            // touch never reaches the relative-mouse aim or fire paths.
++            // MPH-nx: touches come from mphnx_input_poll() below. SDL finger
++            // events are only counted, to show whether SDL delivers them.
 +            if (event.type == SDL_FINGERDOWN || event.type == SDL_FINGERMOTION ||
 +                event.type == SDL_FINGERUP) {
-+                int ww = 0, wh = 0;
-+                SDL_GetWindowSize(presentation.windows[0], &ww, &wh);
-+                float lx = 0.0f, ly = 0.0f;
-+                SDL_RenderWindowToLogical(presentation.renderers[0],
-+                    static_cast<int>(event.tfinger.x * static_cast<float>(ww)),
-+                    static_cast<int>(event.tfinger.y * static_cast<float>(wh)),
-+                    &lx, &ly);
-+                const float bl = static_cast<float>(bottom_content_left);
-+                const float bt = presentation.separate ? 0.0f
-+                                                       : static_cast<float>(kScreenHeight);
-+                const bool inside = lx >= bl && lx < bl + kScreenWidth &&
-+                                    ly >= bt && ly < bt + kScreenHeight;
-+                if (event.type == SDL_FINGERDOWN && inside) {
-+                    mouse_down = true;
-+                    ++host_touch_presses;
-+                    last_touch_event_x = static_cast<int>(lx);
-+                    last_touch_event_y = static_cast<int>(ly);
-+                    touch_release_pending = false;
-+                    touch_frames_held = 0;
-+                    set_touch_from_mouse(lx, ly, true, options.screen_layout,
-+                                         bottom_logical_width);
-+                } else if (event.type == SDL_FINGERMOTION && mouse_down) {
-+                    if (inside)
-+                        set_touch_from_mouse(lx, ly, true, options.screen_layout,
-+                                             bottom_logical_width);
-+                } else if (event.type == SDL_FINGERUP && mouse_down) {
-+                    mouse_down = false;
-+                    if (touch_frames_held < 2)
-+                        touch_release_pending = true;
-+                    else
-+                        nds_set_touch(0, 0, false);
-+                }
++                ++nx_sdl_finger_events;
++                if (event.type == SDL_FINGERDOWN && nx_sdl_finger_downs++ < 20)
++                    std::fprintf(stderr,
++                        "[mph-nx] SDL finger down %.3f,%.3f (sdl touch events so far %u)\n",
++                        event.tfinger.x, event.tfinger.y, nx_sdl_finger_events);
 +                continue;
 +            }
 +#endif
              if (event.type == SDL_QUIT) {
                  release_relative_mouse();
                  running = false;
-@@ -4218,6 +4325,9 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3451,6 +3564,10 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+                 clear_virtual_stylus();
+                 publish_keys();
+             }
++#if defined(__SWITCH__) && !defined(NDS_HAVE_SDL3)
++            if (nx_cursor_active && event.type == SDL_CONTROLLERBUTTONDOWN)
++                continue;
++#endif
+             if (event.type == SDL_CONTROLLERBUTTONDOWN ||
+                 event.type == SDL_CONTROLLERBUTTONUP) {
+                 RecompRuntimeUiInput menu_input{};
+@@ -3764,10 +3881,20 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+                         publish_keys();
+                     }
+                 };
++#if defined(__SWITCH__) && !defined(NDS_HAVE_SDL3)
++                if (nx_cursor_active) {
++                    if (stick_pressed != 0) {
++                        stick_pressed = 0;
++                        publish_keys();
++                    }
++                } else
++#endif
++                {
+                 stick_dir(lx, 1u << 4, true);    // Right
+                 stick_dir(lx, 1u << 5, false);   // Left
+                 stick_dir(ly, 1u << 6, false);   // Up (SDL Y axis points down)
+                 stick_dir(ly, 1u << 7, true);    // Down
++                }
+             }
+ 
+             if (!menu_open && virtual_stylus_available) {
+@@ -3818,7 +3945,11 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+                 }
+             }
+ 
+-            if (!menu_open && mph_prime_controls_available) {
++            if (!menu_open && mph_prime_controls_available
++#if defined(__SWITCH__) && !defined(NDS_HAVE_SDL3)
++                && !nx_cursor_active
++#endif
++                ) {
+                 // Right stick -> camera aim; triggers act as bindable
+                 // pseudo-buttons (defaults: RT shoot, LT scan-fire).
+                 const float rx = SDL_GameControllerGetAxis(
+@@ -3989,6 +4120,87 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+                     nds_set_touch(128, 96, true);
+             }
+         }
++#if defined(__SWITCH__) && !defined(NDS_HAVE_SDL3)
++        // MPH-nx: the Switch touchscreen, or the ZL cursor with A to tap,
++        // drives the DS touchscreen. Runs after every other touch writer so a
++        // real touch always wins; when nothing is touching it only releases
++        // its own press, leaving touch to the other paths.
++        {
++            bool want = false;
++            int want_x = 0, want_y = 0;
++            const char* source = "finger";
++            if (nx_cursor_active) {
++                const float mag = std::sqrt(nx_in.lx * nx_in.lx + nx_in.ly * nx_in.ly);
++                constexpr float kDead = 0.15f;
++                if (mag > kDead) {
++                    const float v = (mag - kDead) / (1.0f - kDead);
++                    const float step = (1.0f + 7.0f * v * v) / mag;
++                    nx_cursor_x = std::clamp(nx_cursor_x + nx_in.lx * step, 0.0f, 255.0f);
++                    nx_cursor_y = std::clamp(nx_cursor_y + nx_in.ly * step, 0.0f, 191.0f);
++                }
++                want = nx_in.a != 0;
++                want_x = static_cast<int>(std::lround(nx_cursor_x));
++                want_y = static_cast<int>(std::lround(nx_cursor_y));
++                source = "cursor";
++            } else if (nx_in.touch_count > 0) {
++                float lx = 0.0f, ly = 0.0f;
++                SDL_RenderWindowToLogical(presentation.renderers[0],
++                                          nx_in.touch_x, nx_in.touch_y, &lx, &ly);
++                const float bl = static_cast<float>(bottom_content_left);
++                const float bt = presentation.separate
++                    ? 0.0f : static_cast<float>(kScreenHeight);
++                if (lx >= bl && lx < bl + kScreenWidth &&
++                    ly >= bt && ly < bt + kScreenHeight) {
++                    want = true;
++                    want_x = static_cast<int>(lx - bl);
++                    want_y = static_cast<int>(ly - bt);
++                } else if (!nx_touch_down && nx_touch_count < 200) {
++                    static int last_miss_x = -1, last_miss_y = -1;
++                    if (nx_in.touch_x != last_miss_x || nx_in.touch_y != last_miss_y) {
++                        last_miss_x = nx_in.touch_x; last_miss_y = nx_in.touch_y;
++                        std::fprintf(stderr,
++                            "[mph-nx] touch outside bottom screen: switch %d,%d -> logical %.1f,%.1f\n",
++                            nx_in.touch_x, nx_in.touch_y, lx, ly);
++                    }
++                }
++            }
++            want_x = std::clamp(want_x, 0, kScreenWidth - 1);
++            want_y = std::clamp(want_y, 0, kScreenHeight - 1);
++            if (want) {
++                if (!nx_touch_down) {
++                    ++nx_touch_count;
++                    if (nx_touch_count <= 200)
++                        std::fprintf(stderr,
++                            "[mph-nx] touch %u down (%s): switch %d,%d -> DS %d,%d\n",
++                            nx_touch_count, source, nx_in.touch_x, nx_in.touch_y,
++                            want_x, want_y);
++                    nx_touch_frames = 0;
++                }
++                nx_touch_down = true;
++                ++nx_touch_frames;
++                nx_touch_last_x = static_cast<uint16_t>(want_x);
++                nx_touch_last_y = static_cast<uint16_t>(want_y);
++                nds_set_touch(nx_touch_last_x, nx_touch_last_y, true);
++            } else if (nx_touch_down) {
++                if (nx_touch_frames < 3) {
++                    // A quick tap is held for at least three frames so the
++                    // game's once-per-frame touch read cannot miss it.
++                    ++nx_touch_frames;
++                    nds_set_touch(nx_touch_last_x, nx_touch_last_y, true);
++                } else {
++                    if (nx_touch_count <= 200)
++                        std::fprintf(stderr,
++                            "[mph-nx] touch %u up after %u frames at DS %u,%u\n",
++                            nx_touch_count, nx_touch_frames,
++                            static_cast<unsigned>(nx_touch_last_x),
++                            static_cast<unsigned>(nx_touch_last_y));
++                    nds_set_touch(0, 0, false);
++                    nx_touch_down = false;
++                    nx_touch_frames = 0;
++                }
++            }
++        }
++#endif
+         if (options.custom_gamepad_bindings) {
+             // Button events handle digital bindings; poll signed axes here.
+             // Each row has one source, so clearing an axis row cannot release
+@@ -4186,8 +4398,9 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+                 presentation, blend_cache.blended[0].data(), top_width,
+                 blend_cache.blended[1].data(), bottom_width,
+                 runtime_ui,
+-                mph_prime_virtual_stylus || generic_virtual_stylus,
+-                mph_virtual_x, mph_virtual_y,
++                mph_prime_virtual_stylus || generic_virtual_stylus || nx_cursor_active,
++                nx_cursor_active ? nx_cursor_x : mph_virtual_x,
++                nx_cursor_active ? nx_cursor_y : mph_virtual_y,
+                 savestate_notice.empty() ? nullptr : savestate_notice.c_str());
+             if (!synthetic_ticks.ok) {
+                 compute_failed = true;
+@@ -4210,14 +4423,18 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+             presentation, top_pixels, top_width,
+             bottom_pixels, bottom_width,
+             runtime_ui,
+-            mph_prime_virtual_stylus || generic_virtual_stylus,
+-            mph_virtual_x, mph_virtual_y,
++            mph_prime_virtual_stylus || generic_virtual_stylus || nx_cursor_active,
++            nx_cursor_active ? nx_cursor_x : mph_virtual_x,
++            nx_cursor_active ? nx_cursor_y : mph_virtual_y,
+             savestate_notice.empty() ? nullptr : savestate_notice.c_str()
+ #if defined(NDS_HAVE_COMPUTE_RENDERER)
+             ,cpu_handoff ? &presented->gl : nullptr
  #endif
              );
          const uint64_t presentation_end=SDL_GetPerformanceCounter();
