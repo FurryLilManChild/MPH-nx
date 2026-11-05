@@ -2,6 +2,13 @@
 
 Newest first.
 
+## 2026-11-04: switch-test2 results, switch-test3 prep
+
+- Picture works: renderer opengles2, output 1280x720, stacked screens visible. Snapshot at frame 1800 shows the Adventure / Multiplayer / Options menu drawn correctly. Prime Controls enabled ("melonPrimeDS bindings enabled"; pad aim engaged when sticks used).
+- Blocker: touching the Switch screen did nothing, so the menu could not be passed. Cause (from frontend.cpp): SDL turns touches into mouse clicks, and with relative-mouse / Prime Controls a primary click is routed to aim capture or fire instead of the stylus.
+- Speed: menus about 28 to 30 fps (CPU 30 to 34 ms/frame); some scenes 84 ms (11 fps). Interpreter still near zero (0 to 2 instructions per 2 s). Each snapshot stalled a frame by 60 to 100 ms. Audio choppy because the emulated DS produces audio at game speed, so below 60 fps the queue underruns.
+- switch-test3 changes: Switch fingers mapped straight onto the DS bottom screen (SDL_RenderWindowToLogical, same hold-two-frames release rule as mouse taps); SDL_HINT_TOUCH_MOUSE_EVENTS=0 on Switch; snapshots only when /switch/mph-nx/snapshots.on exists.
+
 ## 2026-11-04: switch-test2 (display fix)
 
 - Changes: Switch window created at 1280x720 and never resized; no integer scale; renderer name and output size logged; BMP snapshots at frames 120, 600, 1800, 3600 in /switch/mph-nx/logs; --relative-mouse-touch on (enables Prime controls).

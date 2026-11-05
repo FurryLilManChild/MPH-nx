@@ -13,7 +13,7 @@ if(NOT NINTENDO_SWITCH)
     message(FATAL_ERROR "MPH-nx: configure with the devkitPro Switch toolchain")
 endif()
 
-set(MPHNX_VERSION "switch-test2" CACHE STRING "Version string shown in logs and hbmenu")
+set(MPHNX_VERSION "switch-test3" CACHE STRING "Version string shown in logs and hbmenu")
 set(NDSRECOMP_ROOT "" CACHE PATH "Pinned, patched ndsrecomp checkout")
 if(NOT EXISTS "${NDSRECOMP_ROOT}/runner/CMakeLists.txt")
     message(FATAL_ERROR "MPH-nx: NDSRECOMP_ROOT does not point at an ndsrecomp checkout")

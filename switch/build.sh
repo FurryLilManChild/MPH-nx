@@ -25,7 +25,7 @@ MPH_ROM="${MPH_ROM:-$MPH_ROOT/Metroid Prime Hunters.nds}"
 BUILD_DIR="${BUILD_DIR:-/home/claude/build/nx}"
 DKRUN="${DKRUN:-/home/claude/dk.sh}"
 JOBS="${JOBS:-2}"
-VERSION="${MPHNX_VERSION:-switch-test2}"
+VERSION="${MPHNX_VERSION:-switch-test3}"
 
 NDSRECOMP_PIN=179ac63d9e4055e1218d61b3fd03c34a94880a6e
 MPH_PIN=61ac84aac262645e446ea28e3d4db3567e2dba8c

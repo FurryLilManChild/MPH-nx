@@ -26,7 +26,7 @@
 int nds_upstream_main(int argc, char** argv);  // upstream main.cpp, renamed at compile time
 
 #ifndef MPHNX_VERSION
-#define MPHNX_VERSION "switch-test2"
+#define MPHNX_VERSION "switch-test3"
 #endif
 
 static const char* kAppDir = "/switch/mph-nx";

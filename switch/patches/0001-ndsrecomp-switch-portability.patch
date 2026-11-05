@@ -13,10 +13,23 @@ index bf4ffb2..1f122af 100644
  #include "execution_region.h"
  #include "execution_region_stats.h"
 diff --git a/runner/src/frontend.cpp b/runner/src/frontend.cpp
-index 7d9d4eb..dc245c0 100644
+index 7d9d4eb..2bfb10e 100644
 --- a/runner/src/frontend.cpp
 +++ b/runner/src/frontend.cpp
-@@ -1456,6 +1456,42 @@ void destroy_presentation(FrontendPresentation& presentation) {
+@@ -815,6 +815,12 @@ bool sdl_init_frontend() {
+     return SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS |
+                     SDL_INIT_GAMECONTROLLER);
+ #else
++#if defined(__SWITCH__)
++    // MPH-nx: touches are handled as fingers (see the event loop); without
++    // this SDL also sends them as mouse clicks, which Prime Controls treats
++    // as aim capture and fire.
++    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
++#endif
+     return SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS |
+                     SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) == 0;
+ #endif
+@@ -1456,6 +1462,49 @@ void destroy_presentation(FrontendPresentation& presentation) {
      presentation.windows[1] = nullptr;
  }
  
@@ -36,6 +49,13 @@ index 7d9d4eb..dc245c0 100644
 +// Saves what the renderer drew (before present) at a few frame counts, so a
 +// black TV can be told apart from a black render.
 +static void mphnx_maybe_snapshot(SDL_Renderer* renderer) {
++    // Off unless /switch/mph-nx/snapshots.on exists: each capture stalls a frame.
++    static const bool enabled = [] {
++        FILE* f = std::fopen("/switch/mph-nx/snapshots.on", "rb");
++        if (f) std::fclose(f);
++        return f != nullptr;
++    }();
++    if (!enabled) return;
 +    static unsigned frame = 0;
 +    ++frame;
 +    if (frame != 120 && frame != 600 && frame != 1800 && frame != 3600) return;
@@ -59,7 +79,7 @@ index 7d9d4eb..dc245c0 100644
  SDL_Renderer* create_renderer(SDL_Window* window) {
  #if defined(NDS_HAVE_SDL3)
      // Driver order is NOT left to SDL3's default here. SDL3 orders its Windows
-@@ -1518,6 +1554,16 @@ SDL_Window* create_window(const char* title, int x, int y, int w, int h,
+@@ -1518,6 +1567,16 @@ SDL_Window* create_window(const char* title, int x, int y, int w, int h,
          SDL_SetWindowPosition(window, x, y);
      return window;
  #else
@@ -76,7 +96,7 @@ index 7d9d4eb..dc245c0 100644
      return SDL_CreateWindow(title, x, y, w, h, static_cast<uint32_t>(flags));
  #endif
  }
-@@ -1897,9 +1943,13 @@ bool create_presentation(const NdsFrontendOptions& options,
+@@ -1897,9 +1956,13 @@ bool create_presentation(const NdsFrontendOptions& options,
                      ? presentation.screen_widths[screen]
                      : presentation.canvas_width,
                  logical_height);
@@ -91,7 +111,7 @@ index 7d9d4eb..dc245c0 100644
  #endif
          }
          presentation.textures[screen] = SDL_CreateTexture(
-@@ -2169,6 +2219,9 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
+@@ -2169,6 +2232,9 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
                                  virtual_stylus_x, virtual_stylus_y);
          draw_savestate_notice(renderer, bottom_rect, savestate_notice);
          ticks.draw += SDL_GetPerformanceCounter() - start;
@@ -101,7 +121,55 @@ index 7d9d4eb..dc245c0 100644
          start = SDL_GetPerformanceCounter();
          SDL_RenderPresent(renderer);
          ticks.swap += SDL_GetPerformanceCounter() - start;
-@@ -4218,6 +4271,9 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3260,6 +3326,47 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+         SDL_Event event{};
+         while (SDL_PollEvent(&event)) {
+             convert_mouse_event_to_logical_coordinates(event, presentation);
++#if defined(__SWITCH__) && !defined(NDS_HAVE_SDL3)
++            // MPH-nx: the Switch touchscreen drives the DS touchscreen directly.
++            // SDL's touch-to-mouse emulation is off (sdl_init_frontend), so a
++            // touch never reaches the relative-mouse aim or fire paths.
++            if (event.type == SDL_FINGERDOWN || event.type == SDL_FINGERMOTION ||
++                event.type == SDL_FINGERUP) {
++                int ww = 0, wh = 0;
++                SDL_GetWindowSize(presentation.windows[0], &ww, &wh);
++                float lx = 0.0f, ly = 0.0f;
++                SDL_RenderWindowToLogical(presentation.renderers[0],
++                    static_cast<int>(event.tfinger.x * static_cast<float>(ww)),
++                    static_cast<int>(event.tfinger.y * static_cast<float>(wh)),
++                    &lx, &ly);
++                const float bl = static_cast<float>(bottom_content_left);
++                const float bt = presentation.separate ? 0.0f
++                                                       : static_cast<float>(kScreenHeight);
++                const bool inside = lx >= bl && lx < bl + kScreenWidth &&
++                                    ly >= bt && ly < bt + kScreenHeight;
++                if (event.type == SDL_FINGERDOWN && inside) {
++                    mouse_down = true;
++                    ++host_touch_presses;
++                    last_touch_event_x = static_cast<int>(lx);
++                    last_touch_event_y = static_cast<int>(ly);
++                    touch_release_pending = false;
++                    touch_frames_held = 0;
++                    set_touch_from_mouse(lx, ly, true, options.screen_layout,
++                                         bottom_logical_width);
++                } else if (event.type == SDL_FINGERMOTION && mouse_down) {
++                    if (inside)
++                        set_touch_from_mouse(lx, ly, true, options.screen_layout,
++                                             bottom_logical_width);
++                } else if (event.type == SDL_FINGERUP && mouse_down) {
++                    mouse_down = false;
++                    if (touch_frames_held < 2)
++                        touch_release_pending = true;
++                    else
++                        nds_set_touch(0, 0, false);
++                }
++                continue;
++            }
++#endif
+             if (event.type == SDL_QUIT) {
+                 release_relative_mouse();
+                 running = false;
+@@ -4218,6 +4325,9 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
  #endif
              );
          const uint64_t presentation_end=SDL_GetPerformanceCounter();
