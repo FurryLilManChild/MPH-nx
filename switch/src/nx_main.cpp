@@ -15,6 +15,8 @@
 #include <ctime>
 #include <exception>
 #include <string>
+#include <algorithm>
+#include <unordered_map>
 #include <vector>
 
 #include <dirent.h>
@@ -26,7 +28,7 @@
 int nds_upstream_main(int argc, char** argv);  // upstream main.cpp, renamed at compile time
 
 #ifndef MPHNX_VERSION
-#define MPHNX_VERSION "switch-test5"
+#define MPHNX_VERSION "switch-test6"
 #endif
 
 static const char* kAppDir = "/switch/mph-nx";
@@ -286,6 +288,116 @@ static void heartbeat_main(void*) {
 }
 
 // ---------------------------------------------------------------------------
+// Profiler: samples the emulation thread (the main thread) about 500 times a
+// second, recording its PC and a short frame-record chain as offsets from the
+// module start, split into card loading and everything else by the guest
+// ARM9 PC. Written to logs/profile.txt every 30 s and at exit. Resolve with
+// aarch64-none-elf-addr2line -fCe <build>.elf against the matching ELF.
+// ---------------------------------------------------------------------------
+
+extern "C" unsigned int g_cpu[];  // guest CPU state; R[15] is word 15 (C struct in the runtime)
+
+static std::atomic<bool> g_prof_run{true};
+static Thread g_prof;
+static Handle g_prof_target = 0;
+
+struct ProfPhase {
+    std::unordered_map<u64, u32> pcs;
+    std::unordered_map<std::string, u32> stacks;
+    u64 samples = 0;
+};
+
+static u64 prof_off(u64 a) {
+    return (a >= g_module_base && a < g_module_base + g_module_size) ? a - g_module_base : 0xffffffffull;
+}
+
+static void prof_dump(FILE* f, const char* name, const ProfPhase& ph) {
+    std::vector<std::pair<u32, u64>> v;
+    v.reserve(ph.pcs.size());
+    for (const auto& kv : ph.pcs) v.push_back({kv.second, kv.first});
+    std::sort(v.begin(), v.end(), [](auto& a, auto& b) { return a.first > b.first; });
+    std::fprintf(f, "[%s pc] samples=%llu\n", name, (unsigned long long)ph.samples);
+    for (size_t i = 0; i < v.size() && i < 4000; ++i)
+        std::fprintf(f, "%llx %u\n", (unsigned long long)v[i].second, v[i].first);
+    std::vector<std::pair<u32, const std::string*>> st;
+    st.reserve(ph.stacks.size());
+    for (const auto& kv : ph.stacks) st.push_back({kv.second, &kv.first});
+    std::sort(st.begin(), st.end(), [](auto& a, auto& b) { return a.first > b.first; });
+    std::fprintf(f, "[%s stack]\n", name);
+    for (size_t i = 0; i < st.size() && i < 3000; ++i)
+        std::fprintf(f, "%s %u\n", st[i].second->c_str(), st[i].first);
+}
+
+static void prof_write(const ProfPhase& play, const ProfPhase& load, u64 failed) {
+    const std::string tmp = std::string(kLogDir) + "/profile.tmp";
+    const std::string out = std::string(kLogDir) + "/profile.txt";
+    FILE* f = std::fopen(tmp.c_str(), "w");
+    if (!f) return;
+    std::fprintf(f, "# mph-nx profile, build %s, module size 0x%llx, unreadable %llu\n",
+                 MPHNX_VERSION, (unsigned long long)g_module_size, (unsigned long long)failed);
+    prof_dump(f, "play", play);
+    prof_dump(f, "load", load);
+    std::fclose(f);
+    std::remove(out.c_str());  // FAT refuses a rename onto an existing file
+    std::rename(tmp.c_str(), out.c_str());
+}
+
+static void prof_main(void*) {
+    ProfPhase play, load;
+    u64 failed = 0;
+    u64 last_write = armGetSystemTick();
+    const u64 write_every = armGetSystemTickFreq() * 30;
+    char key[160];
+    while (g_prof_run.load()) {
+        svcSleepThread(2000000ull);
+        const unsigned guest_pc = g_cpu[15];
+        if (R_FAILED(svcSetThreadActivity(g_prof_target, ThreadActivity_Paused))) { ++failed; continue; }
+        ThreadContext ctx{};
+        const Result rc = svcGetThreadContext3(&ctx, g_prof_target);
+        u64 chain[6];
+        int depth = 0;
+        if (R_SUCCEEDED(rc)) {
+            // Frame records [fp] = caller fp, [fp + 8] = return address. Read while
+            // the thread is paused, only inside the mapping that holds its stack.
+            MemoryInfo mi{};
+            u32 pi = 0;
+            const u64 sp = ctx.sp;
+            if (R_SUCCEEDED(svcQueryMemory(&mi, &pi, sp))) {
+                const u64 lo = sp, hi = mi.addr + mi.size;
+                u64 fp = ctx.fp;
+                while (depth < 6 && fp >= lo && fp + 16 <= hi && !(fp & 7)) {
+                    const u64 ret = reinterpret_cast<const u64*>(fp)[1];
+                    const u64 next = reinterpret_cast<const u64*>(fp)[0];
+                    chain[depth++] = ret;
+                    if (next <= fp) break;
+                    fp = next;
+                }
+            }
+        }
+        svcSetThreadActivity(g_prof_target, ThreadActivity_Runnable);
+        if (R_FAILED(rc)) { ++failed; continue; }
+        const bool loading = (guest_pc >= 0x0209194Cu && guest_pc <= 0x02091A10u) ||
+                             (guest_pc >= 0x02091D0Cu && guest_pc <= 0x02091D1Cu);
+        ProfPhase& ph = loading ? load : play;
+        ++ph.samples;
+        const u64 pc = prof_off(ctx.pc.x);
+        ++ph.pcs[pc];
+        int n = std::snprintf(key, sizeof key, "%llx", (unsigned long long)pc);
+        for (int i = 0; i < depth && n < (int)sizeof key - 20; ++i)
+            n += std::snprintf(key + n, sizeof key - n, ",%llx", (unsigned long long)prof_off(chain[i]));
+        ++ph.stacks[std::string(key, n)];
+        if (armGetSystemTick() - last_write >= write_every) {
+            last_write = armGetSystemTick();
+            prof_write(play, load, failed);
+        }
+    }
+    prof_write(play, load, failed);
+    std::printf("[profile] %llu play + %llu load samples, %llu unreadable\n",
+                (unsigned long long)play.samples, (unsigned long long)load.samples,
+                (unsigned long long)failed);
+}
+
+// ---------------------------------------------------------------------------
 
 int main(int argc, char** argv) {
     (void)argc; (void)argv;
@@ -369,7 +481,15 @@ int main(int argc, char** argv) {
     cargv.push_back(nullptr);
     std::fflush(stdout);
 
+    g_prof_target = threadGetCurHandle();
+    if (R_SUCCEEDED(threadCreate(&g_prof, prof_main, nullptr, nullptr, 0x20000, 0x2B, 2))) {
+        threadStart(&g_prof);
+        std::printf("[profile] sampling the emulation thread into logs/profile.txt\n");
+    }
     const int rc = nds_upstream_main((int)args.size(), cargv.data());
+    g_prof_run.store(false);
+    threadWaitForExit(&g_prof);
+    threadClose(&g_prof);
 
     std::printf("[mph-nx] runner returned %d\n", rc);
     g_heartbeat_run.store(false);
