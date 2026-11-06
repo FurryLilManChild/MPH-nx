@@ -2,6 +2,11 @@
 
 Newest first.
 
+## 2026-11-06: switch-test8 results, switch-test9
+
+- test8 gameplay medians: accurate+software 22.0 fps, flat+software 20.4, flat+deko3d 22.3. deko3d renders correctly on hardware and removes the 3D wait (6-9% to 0.1%). Flat code halves game-code cost but dispatch rises to 21% and unadmitted MSR/MRS fall to the interpreter. CPU sync windows are cut by I/O fences; no-fence and small dispatch cache gave nothing.
+- test9: flat regions tail-call each other directly (3,462 musttail link sites, guarded by a per-page written-since-validation bit); dispatcher fast slots for flat-model targets checked by page generation; MSR/MRS admitted in flat regions (mode changes still single-step); live Block linking toggle and fast-slot counters.
+
 ## 2026-11-06: switch-test7 results, switch-test8
 
 - test7: startup about 2 s (from about 10); card reads instant inside MPH's PIO loop; CPU sync windows had no effect (about 3,500 scheduler rounds per frame on every setting).
