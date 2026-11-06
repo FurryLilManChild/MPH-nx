@@ -150,8 +150,8 @@ int main(int argc, char** argv) {
             g_ntrace.clear();
             nr_redirect = 0; g_escape = 0; g_io_native = 0; g_nr_q = 0;
             g_services = 0; g_runtime_cycles = 0; nr_deadline = 100000;
-            if (setjmp(g_bail) == 0) e.fn(0);
-            bool native_ok = !nr_redirect && (g_cpu.R[15] & ~1u) == SENTINEL && !g_escape;
+            if (setjmp(g_bail) == 0) e.fn(addr);
+            bool native_ok = nr_redirect != 2 && (g_cpu.R[15] & ~1u) == SENTINEL && !g_escape;
             if (g_escape) escapes[g_escape]++;
             // reference
             armv4t::CPUState c{};

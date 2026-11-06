@@ -57,6 +57,10 @@ enum { NR_STAT_SERVICE, NR_STAT_YIELD, NR_STAT_IRQ, NR_STAT_DYN, NR_STAT_DYN_MIS
 static uint32_t g_ov_lo = 0xFFFFFFFFu, g_ov_hi = 0;
 static int g_ov_resident[64];          // per overlay: 1 resident, 0 not, -1 unknown
 static uint32_t g_ov_dirty = 1;
+// Bus-side RAM writes (DMA, card transfers, slow-path stores) bump this; the
+// native fast path does not, so a change means something else wrote RAM.
+extern uint64_t g_coverage_write_epoch;
+static uint64_t g_ov_epoch = ~0ull;
 
 static void ov_bounds() {
     for (uint32_t i = 0; i < nr_overlay_count; ++i) {
@@ -82,6 +86,7 @@ static void ov_identify() {
     for (uint32_t i = 0; i < nr_overlay_count; ++i)
         g_ov_resident[i] = ov_present(nr_overlays[i]) ? 1 : 0;
     g_ov_dirty = 0;
+    g_ov_epoch = g_coverage_write_epoch;
     ++g_nr_stats[NR_STAT_OVSWITCH];
 }
 
@@ -96,7 +101,7 @@ static const NrEntry* find(const NrEntry* tab, uint32_t n, uint32_t key) {
 static NrFn nr_lookup(uint32_t key) {
     const uint32_t a = key & ~1u;
     if (a >= g_ov_lo && a < g_ov_hi) {
-        if (g_ov_dirty) ov_identify();
+        if (g_ov_dirty || g_ov_epoch != g_coverage_write_epoch) ov_identify();
         for (uint32_t i = 0; i < nr_overlay_count; ++i) {
             const NrOverlay& o = nr_overlays[i];
             if (g_ov_resident[i] == 1 && a >= o.ram && a < o.ram + o.size) {
