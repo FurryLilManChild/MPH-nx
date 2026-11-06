@@ -2,6 +2,14 @@
 
 Newest first.
 
+## 2026-11-05: switch-test6 results, switch-test7
+
+- test6 profile (2 ms host samples of the emulation thread): about 25 to 30% generated guest code, about 20% dispatcher, 9% scheduler and timers, 7% memory bus, 5% I/O and DMA, 5% graphics emulation plus 4% waiting on the 3D thread, 3% GL texture upload in mesa.
+- Startup: the stream-iterator ROM read took about 8 s and the SHA-1 about 1 s.
+- Loads: the plateaus at 11 fps are MPH's card PIO loop (0x020919EC). Fast loading v1 left them unchanged because each card word still cost a scheduler round.
+- Both quits crashed after "runner returned 0", during static teardown.
+- test7: CPU sync window option (64/128/256/512 system cycles, reusing upstream's performance-window fences, geometry ports exempt, GX FIFO stall ends the slice), fast loading v2 (instant words inside the PIO loop, default on), bulk ROM read with a cached SHA-1, fully buffered logs flushed each second, _exit after shutdown, per-launch profile files and a timed speed line every 10 s.
+
 ## 2026-11-05: switch-test5 results, switch-test6
 
 - test5 (Mark): save recovered and loaded; + pauses; ZL scans (door opened); remapping works; layouts and touch work; settings persist across builds.
