@@ -477,17 +477,29 @@ int main(int argc, char** argv) {
     // Game code model, chosen in the MPH-nx menu (applies at launch):
     // cpu_core=1 selects the flat-AOT ARM9 code, otherwise faithful.
     {
-        bool flat = false;
+        bool flat = true, diagnostics = false;
         if (FILE* f = fopen((app + "/mph-nx-settings.ini").c_str(), "r")) {
             char line[160];
-            while (fgets(line, sizeof line, f))
+            while (fgets(line, sizeof line, f)) {
                 if (strncmp(line, "cpu_core=", 9) == 0) flat = atoi(line + 9) == 1;
+                if (strncmp(line, "diagnostics=", 12) == 0) diagnostics = atoi(line + 12) == 1;
+            }
             fclose(f);
         }
         add("--execution-model"); add(flat ? "performance" : "faithful");
         std::printf("[mph-nx] game code: %s\n", flat ? "flat (performance)" : "accurate (faithful)");
+        // Test10: the upstream diagnostics (performance JSON, sampled
+        // attribution, coverage manifest) cost several percent of the
+        // emulation thread. Off unless diagnostics=1 in mph-nx-settings.ini;
+        // the MPH-nx speed line in the log is always written.
+        if (diagnostics) {
+            setenv("NDS_PROFILE_EMU", "31", 1);
+            setenv("NDS_PROFILE_DISPATCH", "1009", 1);
+        }
+        add("--diagnostics"); add(diagnostics ? "on" : "off");
+        std::printf("[mph-nx] diagnostics: %s\n", diagnostics ? "on" : "off");
     }
-    add("--diagnostics"); add("on");
+    add("--no-coverage-manifest");
     add("--diagnostics-dir"); add(diag);
     add("--diagnostics-interval-ms"); add("2000");
     add("--discover-static-misses");

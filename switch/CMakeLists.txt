@@ -13,7 +13,7 @@ if(NOT NINTENDO_SWITCH)
     message(FATAL_ERROR "MPH-nx: configure with the devkitPro Switch toolchain")
 endif()
 
-set(MPHNX_VERSION "switch-test9" CACHE STRING "Version string shown in logs and hbmenu")
+set(MPHNX_VERSION "switch-test10" CACHE STRING "Version string shown in logs and hbmenu")
 set(MPHNX_TITLE "MPH-nx" CACHE STRING "Name shown in hbmenu")
 option(MPHNX_PIE_LIBS "Compile the runner's static libraries (game banks included) as -fPIE instead of -fPIC" ON)
 set(MPHNX_PERF_BANK_DIR "" CACHE PATH "Flat-AOT mph_perf_arm9 bank (nds_recompile --flat-execution); empty = faithful only")
@@ -35,6 +35,8 @@ set(NDS_MPH_SUBMIT_IMPLEMENTATION "HLE" CACHE STRING "" FORCE)
 set(NDS_GX_COMMAND_CACHE ON CACHE BOOL "" FORCE)
 set(NDS_ARM9_DYNARMIC_ROOT "" CACHE PATH "" FORCE)
 set(NDSRECOMP_COMPILER_CACHE OFF CACHE STRING "" FORCE)
+# Test10: upstream sampling diagnostics are compiled to armed-only.
+set(NDS_LEAN_DIAGNOSTICS ON CACHE BOOL "" FORCE)
 
 add_subdirectory("${NDSRECOMP_ROOT}/runner" "${CMAKE_BINARY_DIR}/runner")
 
@@ -104,7 +106,7 @@ if(MPHNX_DEKO_SHADERS)
     set(_deko "${CMAKE_CURRENT_SOURCE_DIR}/src/deko")
     target_sources(nds_runner PRIVATE
         "${_deko}/nx_deko.cpp" "${_deko}/GpuMemHeap.cpp" "${_deko}/UploadBuffer.cpp"
-        "${_deko}/GPU3D_Deko.cpp" "${MPHNX_DEKO_SHADERS}")
+        "${_deko}/GPU3D_Deko.cpp" "${_deko}/nx_present.cpp" "${MPHNX_DEKO_SHADERS}")
     target_include_directories(nds_runner PRIVATE "${_deko}")
     target_compile_definitions(nds_runner PRIVATE MPHNX_DEKO3D=1)
     target_link_libraries(nds_runner PRIVATE deko3d)

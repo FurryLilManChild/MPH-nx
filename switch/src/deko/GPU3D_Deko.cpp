@@ -1385,6 +1385,7 @@ void DekoRenderer::RenderFrame(GPU& gpu)
     EmuQueue.submitCommands(cmdlist);
     EmuQueue.flush();
     UploadBuf.LastFlushBuffer = 0;
+    if (OutputSlot != (int)curSlice) PrevSlot = OutputSlot;
     OutputSlot = (int)curSlice;
     OutputWaited = false;
 
@@ -1440,17 +1441,35 @@ void DekoRenderer::RestartFrame(GPU& gpu)
 
 }
 
+}
+unsigned long long g_nx_deko_late_frames = 0;
+namespace melonDS {
 u32* DekoRenderer::GetLine(int line)
 {
     if (OutputSlot < 0 || line < 0 || line >= 192)
         return DummyLine;
     if (!OutputWaited)
     {
-        // One wait per frame: the GPU has had from VCount 215 to here.
-        FinalOutputFence[OutputSlot].wait();
+        // One decision per frame. MPH-nx test10: if the GPU has not finished
+        // the newest frame yet, show the previous finished one instead of
+        // stalling the emulation thread (3D can lag 2D by one frame, and the
+        // shown sequence never goes backwards).
+        ShownSlot = OutputSlot;
+        if (FinalOutputFence[OutputSlot].wait(0) != DkResult_Success)
+        {
+            if (PrevSlot >= 0)
+            {
+                ShownSlot = PrevSlot;
+                FinalOutputFence[PrevSlot].wait();  // normally already done
+                ++LateFrames;
+                ++g_nx_deko_late_frames;
+            }
+            else
+                FinalOutputFence[OutputSlot].wait();
+        }
         OutputWaited = true;
     }
-    return NxDeko::DataHeap->CpuAddr<u32>(FinalOutputMemory[OutputSlot]) + line * 256;
+    return NxDeko::DataHeap->CpuAddr<u32>(FinalOutputMemory[ShownSlot]) + line * 256;
 }
 
 // MPH-nx factory used by the runner bridge. Null when deko3d is unavailable.

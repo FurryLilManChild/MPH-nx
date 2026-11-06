@@ -1,0 +1,243 @@
+// MPH-nx: deko3d screen presenter (see nx_present.h).
+// Swapchain setup follows RSDuck's melonDS Switch port (frontend/switch/Gfx.cpp,
+// GPL-3.0); the drawing is 2D-engine blits from CPU-written pitch-linear images.
+#include "nx_present.h"
+#include "nx_deko.h"
+
+#include <switch.h>
+#include <array>
+#include <cstdio>
+#include <cstring>
+
+namespace
+{
+constexpr int kFbW = 1280, kFbH = 720;
+constexpr int kSlots = 3;
+constexpr int kDsW = 256, kDsH = 192;
+constexpr int kHudW = 256, kHudH = 16;
+constexpr uint32_t kCmdSlotSize = 0x4000;
+
+bool g_active = false;
+dk::Queue g_queue;
+dk::Swapchain g_swapchain;
+dk::MemBlock g_fb_mem, g_src_mem, g_cmd_mem;
+dk::Image g_fb[kSlots];
+// Per swapchain slot: top, bottom, HUD. One extra black image for clears.
+dk::Image g_src[kSlots][3];
+uint32_t* g_src_cpu[kSlots][3];
+dk::Image g_black;
+dk::CmdBuf g_cmd;
+dk::Fence g_fence[kSlots];
+bool g_fence_used[kSlots];
+
+uint32_t align_up(uint32_t v, uint32_t a) { return (v + a - 1) & ~(a - 1); }
+
+void copy_screen(uint32_t* dst, const uint32_t* src, bool dim)
+{
+    if (!src) { std::memset(dst, 0, kDsW * kDsH * 4); return; }
+    if (!dim) {
+        for (int i = 0; i < kDsW * kDsH; ++i) dst[i] = src[i] | 0xFF000000u;
+    } else {
+        // ~40% brightness, like the old SDL alpha-150 black overlay.
+        for (int i = 0; i < kDsW * kDsH; ++i) {
+            const uint32_t p = src[i];
+            dst[i] = 0xFF000000u | (((p >> 1) & 0x7F7F7Fu) - ((p >> 3) & 0x1F1F1Fu));
+        }
+    }
+}
+
+void put(uint32_t* buf, int w, int h, int x, int y, uint32_t c)
+{
+    if (x >= 0 && y >= 0 && x < w && y < h) buf[y * w + x] = c;
+}
+
+void draw_cursor(uint32_t* buf, float fx, float fy)
+{
+    const int x = (int)(fx + 0.5f), y = (int)(fy + 0.5f), r = 6;
+    for (int d = -r - 1; d <= r + 1; ++d)
+        for (int t = -1; t <= 1; ++t) {
+            put(buf, kDsW, kDsH, x + d, y + t, 0xFF000000u);
+            put(buf, kDsW, kDsH, x + t, y + d, 0xFF000000u);
+        }
+    for (int d = -r; d <= r; ++d) {
+        put(buf, kDsW, kDsH, x + d, y, 0xFFFFFFFFu);
+        put(buf, kDsW, kDsH, x, y + d, 0xFFFFFFFFu);
+    }
+}
+
+int draw_text(uint32_t* buf, int w, int h, int x, int y, const char* text,
+              const char* (*glyph)(char))
+{
+    int n = 0;
+    for (const char* p = text; *p; ++p, ++n) {
+        const char* g = glyph ? glyph(*p) : nullptr;
+        if (!g) continue;
+        for (int gy = 0; gy < 7; ++gy)
+            for (int gx = 0; gx < 5; ++gx)
+                if (g[gy * 5 + gx] == '1') put(buf, w, h, x + n * 6 + gx, y + gy, 0xFFFFFFFFu);
+    }
+    return n;
+}
+
+void draw_notice(uint32_t* buf, const char* text, const char* (*glyph)(char))
+{
+    constexpr int kCols = 40, kRows = 5;
+    const int bx = 5, by = kDsH - kRows * 8 - 5;
+    for (int yy = 0; yy < kRows * 8 + 4; ++yy)
+        for (int xx = 0; xx < kCols * 6 + 6; ++xx)
+            put(buf, kDsW, kDsH, bx + xx, by + yy, 0xFF0A0A0Au);
+    int row = 0, col = 0;
+    char one[2] = {0, 0};
+    for (const char* p = text; *p && row < kRows; ++p) {
+        if (*p == '\n' || col == kCols) {
+            ++row; col = 0;
+            if (*p == '\n') continue;
+            if (row >= kRows) break;
+        }
+        one[0] = *p;
+        draw_text(buf, kDsW, kDsH, bx + 3 + col * 6, by + 2 + row * 8, one, glyph);
+        ++col;
+    }
+}
+
+bool make_pitch_image(dk::Image& img, uint32_t*& cpu, uint32_t w, uint32_t h, uint32_t& offset)
+{
+    dk::ImageLayout layout;
+    dk::ImageLayoutMaker{NxDeko::Device}
+        .setFlags(DkImageFlags_PitchLinear | DkImageFlags_Usage2DEngine)
+        .setFormat(DkImageFormat_BGRA8_Unorm)
+        .setDimensions(w, h)
+        .setPitchStride(w * 4)
+        .initialize(layout);
+    offset = align_up(offset, (uint32_t)layout.getAlignment());
+    img.initialize(layout, g_src_mem, offset);
+    cpu = reinterpret_cast<uint32_t*>(static_cast<uint8_t*>(g_src_mem.getCpuAddr()) + offset);
+    offset += (uint32_t)layout.getSize();
+    return true;
+}
+
+DkImageRect rect(const NxRect& r) { return {(uint32_t)r.x, (uint32_t)r.y, 0, (uint32_t)r.w, (uint32_t)r.h, 1}; }
+}
+
+bool nx_present_active() { return g_active; }
+
+bool nx_present_init()
+{
+    if (g_active) return true;
+    if (!NxDeko::Init()) return false;
+    dk::Device dev = NxDeko::Device;
+
+    g_queue = dk::QueueMaker{dev}
+        .setFlags(DkQueueFlags_Graphics | DkQueueFlags_MediumPrio | DkQueueFlags_DisableZcull)
+        .create();
+    if (!g_queue) { std::fprintf(stderr, "[present] queue failed\n"); return false; }
+
+    dk::ImageLayout fb_layout;
+    dk::ImageLayoutMaker{dev}
+        .setFlags(DkImageFlags_UsageRender | DkImageFlags_UsagePresent | DkImageFlags_Usage2DEngine)
+        .setFormat(DkImageFormat_RGBA8_Unorm)
+        .setDimensions(kFbW, kFbH)
+        .initialize(fb_layout);
+    const uint32_t fb_align = (uint32_t)fb_layout.getAlignment();
+    const uint32_t fb_size = align_up((uint32_t)fb_layout.getSize(), fb_align);
+    g_fb_mem = dk::MemBlockMaker{dev, align_up(fb_size * kSlots, DK_MEMBLOCK_ALIGNMENT)}
+        .setFlags(DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image)
+        .create();
+    std::array<DkImage const*, kSlots> fbs;
+    for (int i = 0; i < kSlots; ++i) {
+        g_fb[i].initialize(fb_layout, g_fb_mem, i * fb_size);
+        fbs[i] = &g_fb[i];
+    }
+
+    const uint32_t src_bytes = align_up(
+        kSlots * (2 * (kDsW * kDsH * 4 + 0x1000) + kHudW * kHudH * 4 + 0x1000) + 16 * 16 * 4 + 0x1000,
+        DK_MEMBLOCK_ALIGNMENT);
+    g_src_mem = dk::MemBlockMaker{dev, src_bytes}
+        .setFlags(DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image)
+        .create();
+    uint32_t off = 0;
+    for (int i = 0; i < kSlots; ++i) {
+        make_pitch_image(g_src[i][0], g_src_cpu[i][0], kDsW, kDsH, off);
+        make_pitch_image(g_src[i][1], g_src_cpu[i][1], kDsW, kDsH, off);
+        make_pitch_image(g_src[i][2], g_src_cpu[i][2], kHudW, kHudH, off);
+    }
+    uint32_t* black = nullptr;
+    make_pitch_image(g_black, black, 16, 16, off);
+    for (int i = 0; i < 16 * 16; ++i) black[i] = 0xFF000000u;
+    if (off > src_bytes) { std::fprintf(stderr, "[present] staging overflow\n"); return false; }
+
+    g_cmd_mem = dk::MemBlockMaker{dev, align_up(kCmdSlotSize * kSlots, DK_MEMBLOCK_ALIGNMENT)}
+        .setFlags(DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached)
+        .create();
+    g_cmd = dk::CmdBufMaker{dev}.create();
+
+    g_swapchain = dk::SwapchainMaker{dev, nwindowGetDefault(), fbs}.create();
+    if (!g_swapchain) { std::fprintf(stderr, "[present] swapchain failed\n"); return false; }
+    g_swapchain.setSwapInterval(1);
+    g_active = true;
+    std::fprintf(stderr, "[present] deko3d presenter ready (%dx%d, %d images)\n", kFbW, kFbH, kSlots);
+    return true;
+}
+
+void nx_present_frame(const NxPresentFrame& f, NxPresentTicks* ticks)
+{
+    if (!g_active) return;
+    uint64_t t0 = armGetSystemTick();
+    const int slot = g_queue.acquireImage(g_swapchain);
+    if (g_fence_used[slot]) g_fence[slot].wait();
+    uint64_t t1 = armGetSystemTick();
+
+    uint32_t* top = g_src_cpu[slot][0];
+    uint32_t* bottom = g_src_cpu[slot][1];
+    uint32_t* hud = g_src_cpu[slot][2];
+    copy_screen(top, f.top, f.dim_top);
+    const bool draw_bottom = f.bottom_rect.w > 0;
+    if (draw_bottom) {
+        copy_screen(bottom, f.bottom, false);
+        if (f.cursor) draw_cursor(bottom, f.cursor_x, f.cursor_y);
+        if (f.notice && *f.notice) draw_notice(bottom, f.notice, f.glyph);
+    }
+    int hud_chars = 0;
+    if (f.hud_text && *f.hud_text) {
+        for (int i = 0; i < kHudW * kHudH; ++i) hud[i] = 0xFF000000u;
+        hud_chars = draw_text(hud, kHudW, kHudH, 2, 2, f.hud_text, f.glyph);
+        if (hud_chars > (kHudW - 4) / 6) hud_chars = (kHudW - 4) / 6;
+    }
+    uint64_t t2 = armGetSystemTick();
+
+    g_cmd.clear();
+    g_cmd.addMemory(g_cmd_mem, slot * kCmdSlotSize, kCmdSlotSize);
+    dk::ImageView fb_view{g_fb[slot]};
+    dk::ImageView black_view{g_black};
+    g_cmd.blitImage(black_view, {0, 0, 0, 16, 16, 1}, fb_view, {0, 0, 0, kFbW, kFbH, 1},
+                    DkBlitFlag_FilterNearest);
+    dk::ImageView top_view{g_src[slot][0]};
+    dk::ImageView bottom_view{g_src[slot][1]};
+    if (draw_bottom && !f.bottom_over_top)
+        g_cmd.blitImage(bottom_view, {0, 0, 0, kDsW, kDsH, 1}, fb_view, rect(f.bottom_rect),
+                        DkBlitFlag_FilterNearest);
+    g_cmd.blitImage(top_view, {0, 0, 0, kDsW, kDsH, 1}, fb_view, rect(f.top_rect),
+                    DkBlitFlag_FilterNearest);
+    if (draw_bottom && f.bottom_over_top)
+        g_cmd.blitImage(bottom_view, {0, 0, 0, kDsW, kDsH, 1}, fb_view, rect(f.bottom_rect),
+                        DkBlitFlag_FilterNearest);
+    if (hud_chars > 0) {
+        const uint32_t hw = (uint32_t)(hud_chars * 6 + 3);
+        dk::ImageView hud_view{g_src[slot][2]};
+        g_cmd.blitImage(hud_view, {0, 0, 0, hw, 11, 1}, fb_view, {6, 6, 0, hw * 3, 33, 1},
+                        DkBlitFlag_FilterNearest);
+    }
+    g_cmd.signalFence(g_fence[slot]);
+    g_fence_used[slot] = true;
+    g_queue.submitCommands(g_cmd.finishList());
+    uint64_t t3 = armGetSystemTick();
+    g_queue.presentImage(g_swapchain, slot);
+    uint64_t t4 = armGetSystemTick();
+    if (ticks) {
+        // Frontend tick units are SDL performance counter ticks; the caller
+        // converts. Here: system ticks (19.2 MHz).
+        ticks->upload = t2 - t1;
+        ticks->draw = (t1 - t0) + (t3 - t2);
+        ticks->swap = t4 - t3;
+    }
+}

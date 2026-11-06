@@ -2,6 +2,11 @@
 
 Newest first.
 
+## 2026-11-06: switch-test9 results, switch-test10
+
+- test9 (flat + deko3d + block linking): median 28.7 fps, about +30% over test8. Profile by category on the emulation thread: game code 10%, dispatch 22%, mesa/GL/kernel 22% (SDL texture upload allocates a new GPU buffer per frame), scheduler 13%, memory helpers 10%. The ARM9 is guest-halted at 89% of round starts; rounds are about 3,500 to 4,500 per frame, set by device deadlines (SPU 1024 cycles, RTC 1022, LCD) and by every hardware divide ending the slice.
+- test10: fast scheduler (instant divider/sqrt, SPU and RTC catch up without splitting rounds, ARM9 I/O fences only on registers another agent can change, ARM7-leads rounds while the ARM9 sleeps, stopping at the first ARM9 interrupt); deko3d presenter replaces SDL renderer and mesa on the frame path (2D-engine blits from CPU pitch-linear images, CPU-drawn cursor and HUD); 3D readback shows the previous finished frame instead of stalling; upstream sampling diagnostics compiled armed-only, perf JSON and coverage manifest off by default. Speed log adds emu/present ms and rounds, ARM7-lead rounds and divides per frame.
+
 ## 2026-11-06: switch-test8 results, switch-test9
 
 - test8 gameplay medians: accurate+software 22.0 fps, flat+software 20.4, flat+deko3d 22.3. deko3d renders correctly on hardware and removes the 3D wait (6-9% to 0.1%). Flat code halves game-code cost but dispatch rises to 21% and unadmitted MSR/MRS fall to the interpreter. CPU sync windows are cut by I/O fences; no-fence and small dispatch cache gave nothing.

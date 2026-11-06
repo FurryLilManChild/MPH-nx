@@ -70,7 +70,12 @@ private:
     GpuMemHeap::Allocation FinalOutputMemory[2];
     dk::Fence FinalOutputFence[2] = {};
     int OutputSlot = -1;      // slot holding the latest submitted frame
+    int PrevSlot = -1;        // the frame before it (finished by now)
+    int ShownSlot = -1;       // what GetLine returns this frame
     bool OutputWaited = false;
+public:
+    unsigned long long LateFrames = 0;  // frames shown from PrevSlot
+private:
 
     GpuMemHeap::Allocation ImageDescriptors;
     GpuMemHeap::Allocation SamplerDescriptors;
