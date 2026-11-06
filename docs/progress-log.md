@@ -2,6 +2,12 @@
 
 Newest first.
 
+## 2026-11-06: switch-test11 and test12 results, switch-test13
+
+- test11 hung on a white screen after loading at Fastest and showed flipped screens in menus. Flip: steady 3D pacing showed the previous 3D frame, which in dual-screen 3D menus belongs to the other screen (fixed in test12 by matching the POWCNT1 swap bit). The hang persisted in test12 with fast writes, return chaining and run-through-I/O all off; Mark found Accurate (64) boots, then Fastest is fine in play. The remaining Fastest-only change was removing the 3D status fence, which also gave no measurable speed. Hallway about 0.85x, unchanged.
+- test12 heavy stretches: up to 13,500 card-register and 4,900 card-data-port fences per frame. The emulation thread waits about 2% on the 3D GPU fence.
+- test13: 3D status fence back on by default (new settings key); card register and card data port fences on a live "Card sync stop" toggle; Switch log stays fully buffered (upstream main.cpp set stderr unbuffered); the debug-server bus event ring is skipped on every slow access.
+
 ## 2026-11-06: switch-test10 results, switch-test11
 
 - test10: deko3d presenter works (present 0.5 ms per frame). The saved CPU sync was still Accurate (64) from test8, so test9 and the first test10 run never opened a wide window. With Fastest (512) the hallway went from 0.73x to about 0.85x, but 30 to 97% of windows were still ended by I/O fences (up to 22,000 rounds per frame in a heavy stretch). Profile: game code about 20% of emulation time; dispatcher 16%, scheduler 12.5%, bus 12.5%, per-store code-write bookkeeping 7%. About 28% of frames showed the previous 3D frame.
