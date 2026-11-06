@@ -38,7 +38,7 @@ static const char* kLogDir = "/switch/mph-nx/logs";
 // Logs: one file per stream, previous launch kept as *.prev.*
 // ---------------------------------------------------------------------------
 
-static void rotate(const std::string& cur, const std::string& prev) {
+[[maybe_unused]] static void rotate(const std::string& cur, const std::string& prev) {
     struct stat st{};
     if (stat(cur.c_str(), &st) != 0) return;
     // FAT refuses a rename onto an existing file: delete first.
@@ -49,10 +49,16 @@ static void rotate(const std::string& cur, const std::string& prev) {
 static void open_logs() {
     mkdir(kAppDir, 0777);
     mkdir(kLogDir, 0777);
-    const std::string out = std::string(kLogDir) + "/mph-nx.log";
-    const std::string err = std::string(kLogDir) + "/mph-nx.err.log";
-    rotate(out, std::string(kLogDir) + "/mph-nx.prev.log");
-    rotate(err, std::string(kLogDir) + "/mph-nx.prev.err.log");
+    // One pair of log files per launch, so a multi-run test keeps all runs.
+    char stamp[32] = "launch";
+    {
+        const std::time_t t = std::time(nullptr);
+        std::tm tmv{};
+        localtime_r(&t, &tmv);
+        std::strftime(stamp, sizeof stamp, "%Y%m%d-%H%M%S", &tmv);
+    }
+    const std::string out = std::string(kLogDir) + "/mph-nx-" + stamp + ".log";
+    const std::string err = std::string(kLogDir) + "/mph-nx-" + stamp + ".err.log";
     // Fully buffered: a line-buffered SD log costs a file-system call per
     // line on the emulation thread. The heartbeat thread flushes once a second.
     static char out_buf[64 * 1024], err_buf[64 * 1024];
