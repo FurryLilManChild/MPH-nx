@@ -77,6 +77,10 @@ if [ ! -f "$PERF_DIR/mph_perf_arm9_dispatch.c" ]; then
     --validate-live-bytes --flat-execution >/dev/null || die "flat bank generation failed"
 fi
 
+DEKO_DIR="$BUILD_DIR/deko-shaders"
+say "  deko3d shaders"
+DKRUN="$DKRUN" "$HERE/tools/build_deko_shaders.sh" "$HERE/src/deko/shaders" "$DEKO_DIR" >/dev/null || die "deko3d shader build failed"
+
 say "4/6 BIOS banks"
 GEN="$BUILD_DIR/gen"
 mkdir -p "$GEN"
@@ -97,6 +101,7 @@ INC="$COMPAT;/opt/devkitpro/libnx/include;/opt/devkitpro/portlibs/switch/include
   -DMPHNX_PIE_LIBS=$PIE_LIBS \
   -DMPHNX_LEAN=$LEAN \
   -DMPHNX_PERF_BANK_DIR='$PERF_DIR' \
+  -DMPHNX_DEKO_SHADERS='$DEKO_DIR/nx_deko_shaders.c' \
   -DNDSRECOMP_ROOT='$NDSRECOMP_ROOT' \
   -DNDS_GENERATED_DIR='$GEN' \
   -DNDS_TITLE_BANK_DIR='$MPH_ROOT/generated/recomp' \

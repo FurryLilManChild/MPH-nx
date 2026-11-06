@@ -17,6 +17,7 @@ set(MPHNX_VERSION "switch-test8" CACHE STRING "Version string shown in logs and 
 set(MPHNX_TITLE "MPH-nx" CACHE STRING "Name shown in hbmenu")
 option(MPHNX_PIE_LIBS "Compile the runner's static libraries (game banks included) as -fPIE instead of -fPIC" ON)
 set(MPHNX_PERF_BANK_DIR "" CACHE PATH "Flat-AOT mph_perf_arm9 bank (nds_recompile --flat-execution); empty = faithful only")
+set(MPHNX_DEKO_SHADERS "" CACHE PATH "Generated deko3d shader blob (tools/build_deko_shaders.sh); empty = no GPU 3D renderer")
 option(MPHNX_LEAN "Lean ARM9 bank bodies: no per-instruction diagnostics, fixed cached code-fetch cost" ON)
 set(NDSRECOMP_ROOT "" CACHE PATH "Pinned, patched ndsrecomp checkout")
 if(NOT EXISTS "${NDSRECOMP_ROOT}/runner/CMakeLists.txt")
@@ -95,6 +96,22 @@ if(MPHNX_PERF_BANK_DIR)
     target_link_libraries(nds_runner PRIVATE nds_mph_perf_banks)
     target_compile_definitions(nds_runner PRIVATE NDS_MPH_FLAT_PERFORMANCE=1)
     message(STATUS "MPH-nx: flat-AOT ARM9 bank linked from ${MPHNX_PERF_BANK_DIR}")
+endif()
+
+if(MPHNX_DEKO_SHADERS)
+    # deko3d GPU 3D renderer ported from RSDuck's melonDS Switch build.
+    # Selected at launch from the MPH-nx menu; software 3D stays the default.
+    set(_deko "${CMAKE_CURRENT_SOURCE_DIR}/src/deko")
+    target_sources(nds_runner PRIVATE
+        "${_deko}/nx_deko.cpp" "${_deko}/GpuMemHeap.cpp" "${_deko}/UploadBuffer.cpp"
+        "${_deko}/GPU3D_Deko.cpp" "${MPHNX_DEKO_SHADERS}")
+    set_source_files_properties("${_deko}/nx_deko.cpp" "${_deko}/GpuMemHeap.cpp"
+        "${_deko}/UploadBuffer.cpp" "${_deko}/GPU3D_Deko.cpp"
+        PROPERTIES INCLUDE_DIRECTORIES "${_deko};${NDSRECOMP_ROOT}/runner/vendor/melonds"
+                   COMPILE_DEFINITIONS "XXH_INLINE_ALL=1")
+    target_compile_definitions(nds_runner PRIVATE MPHNX_DEKO3D=1)
+    target_link_libraries(nds_runner PRIVATE deko3d)
+    message(STATUS "MPH-nx: deko3d GPU 3D renderer from ${MPHNX_DEKO_SHADERS}")
 endif()
 
 # Upstream main() becomes nds_upstream_main(); the Switch entry point calls it.
