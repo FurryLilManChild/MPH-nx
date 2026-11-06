@@ -1,6 +1,6 @@
 # MPH-nx
 
-Native Nintendo Switch homebrew port of Metroid Prime: Hunters (Nintendo DS, USA revision 0, AMHE) built on mstan's MetroidPrimeHuntersRecomp and the ndsrecomp framework.
+Native Nintendo Switch homebrew port of Metroid Prime: Hunters (Nintendo DS, USA Rev 1, AMHE) as a native static recompilation (see `docs/native-recomp-design.md`). switch-test1 to test13 ran on mstan's MetroidPrimeHuntersRecomp and the ndsrecomp framework (Rev 0); those remain references and a source of hardware device code.
 
 ## Who does what
 
@@ -28,11 +28,14 @@ Native Nintendo Switch homebrew port of Metroid Prime: Hunters (Nintendo DS, USA
 
 ## Required ROM
 
-USA revision 0, AMHE, 64 MiB, SHA-1 90164d1ac127ee5f9815ea4ae7de798c7b5fc629. Mark's dump matches.
+USA Rev 1, AMHE, ROM version byte 1, 64 MiB, SHA-1 a8679d4f8dcb445cbe946a424241ef44901b0caf (Mark's dump; header and logo CRCs check out). The ARM7 binary is byte-identical to Rev 0.
+
+Rev 0 (SHA-1 90164d1ac127ee5f9815ea4ae7de798c7b5fc629) is kept as a reference for the old builds (switch-test1 to test13).
 
 ## Layout
 
 - `docs/feasibility.md`: original feasibility analysis
 - `docs/source-review.md`: upstream source findings and performance evidence
+- `docs/native-recomp-design.md`: the native recompilation design and milestones
 - `docs/progress-log.md`: newest first, one entry per session
 - `switch/`: Switch platform layer, patches and build scripts
