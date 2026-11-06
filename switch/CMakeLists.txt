@@ -7,7 +7,7 @@
 # Configure with the devkitPro Switch toolchain; see switch/build.sh.
 
 cmake_minimum_required(VERSION 3.20)
-project(mph_nx LANGUAGES C CXX)
+project(mph_nx LANGUAGES C CXX ASM)
 
 if(NOT NINTENDO_SWITCH)
     message(FATAL_ERROR "MPH-nx: configure with the devkitPro Switch toolchain")
@@ -122,8 +122,7 @@ if(MPHNX_NATIVE_DIR)
         target_compile_options(mphnx_native_game PRIVATE -fPIE
             "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/compat/mphnx_hidden.h")
     endif()
-    enable_language(ASM)
-    target_sources(nds_runner PRIVATE "${_nat}/nr_runtime.cpp" "${_nat}/nr_coro.c" "${_nat}/nr_coro.S")
+    target_sources(nds_runner PRIVATE "${_nat}/nr_runtime.cpp" "${_nat}/nr_coro.c" "${_nat}/nr_coro_switch.S")
     target_include_directories(nds_runner PRIVATE "${_nat}" "${MPHNX_NATIVE_DIR}")
     target_compile_definitions(nds_runner PRIVATE MPHNX_NATIVE=1)
     target_link_libraries(nds_runner PRIVATE mphnx_native_game)
