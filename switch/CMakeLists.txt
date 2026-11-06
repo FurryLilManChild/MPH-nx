@@ -13,9 +13,10 @@ if(NOT NINTENDO_SWITCH)
     message(FATAL_ERROR "MPH-nx: configure with the devkitPro Switch toolchain")
 endif()
 
-set(MPHNX_VERSION "switch-test7" CACHE STRING "Version string shown in logs and hbmenu")
+set(MPHNX_VERSION "switch-test8" CACHE STRING "Version string shown in logs and hbmenu")
 set(MPHNX_TITLE "MPH-nx" CACHE STRING "Name shown in hbmenu")
-option(MPHNX_PIE_LIBS "Compile the runner's static libraries (game banks included) as -fPIE instead of -fPIC" OFF)
+option(MPHNX_PIE_LIBS "Compile the runner's static libraries (game banks included) as -fPIE instead of -fPIC" ON)
+option(MPHNX_LEAN "Lean ARM9 bank bodies: no per-instruction diagnostics, fixed cached code-fetch cost" ON)
 set(NDSRECOMP_ROOT "" CACHE PATH "Pinned, patched ndsrecomp checkout")
 if(NOT EXISTS "${NDSRECOMP_ROOT}/runner/CMakeLists.txt")
     message(FATAL_ERROR "MPH-nx: NDSRECOMP_ROOT does not point at an ndsrecomp checkout")
@@ -37,7 +38,7 @@ add_subdirectory("${NDSRECOMP_ROOT}/runner" "${CMAKE_BINARY_DIR}/runner")
 
 set(_runner_dir "${NDSRECOMP_ROOT}/runner")
 
-# Speed experiment (switch-test5 build B, no measurable gain). CMake builds static libraries as
+# Speed: on since switch-test8 (test5 build B measured no clear gain alone). CMake builds static libraries as
 # -fPIC, which reaches every global (guest registers, cycle counters, flags)
 # through the GOT: one extra load per access, several per guest instruction.
 # They only ever link into this PIE executable, so -fPIE is valid and lets the
@@ -55,6 +56,12 @@ if(MPHNX_PIE_LIBS)
     target_compile_options(nds_banks PRIVATE
         "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/compat/mphnx_hidden.h")
     message(STATUS "MPH-nx: static libraries built -fPIE")
+endif()
+
+if(MPHNX_LEAN)
+    # See the MPH-nx lean block at the end of recompiler/armv4t/runtime_arm.h.
+    target_compile_definitions(nds_banks PRIVATE MPHNX_LEAN=1)
+    message(STATUS "MPH-nx: lean ARM9 bank bodies")
 endif()
 
 # Upstream main() becomes nds_upstream_main(); the Switch entry point calls it.
