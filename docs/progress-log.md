@@ -2,6 +2,11 @@
 
 Newest first.
 
+## 2026-11-06: switch-native1
+
+- First build on the native recompilation engine (docs/native-recomp-design.md), USA Rev 1 only. ARM9 static image plus 18 overlays compiled to C (about 9,900 functions); interpreter fallback logs every miss. ARM7 still on the old banks.
+- Controls deadline (Mark): controls must be worked on in switch-native2 or switch-native3 at the latest. That means porting Prime controls aim to Rev 1 addresses, then the twin-stick, touch and button mapping and the remap menu.
+
 ## 2026-11-06: switch-test11 and test12 results, switch-test13
 
 - test11 hung on a white screen after loading at Fastest and showed flipped screens in menus. Flip: steady 3D pacing showed the previous 3D frame, which in dual-screen 3D menus belongs to the other screen (fixed in test12 by matching the POWCNT1 swap bit). The hang persisted in test12 with fast writes, return chaining and run-through-I/O all off; Mark found Accurate (64) boots, then Fastest is fine in play. The remaining Fastest-only change was removing the 3D status fence, which also gave no measurable speed. Hallway about 0.85x, unchanged.
