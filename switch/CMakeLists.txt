@@ -13,7 +13,7 @@ if(NOT NINTENDO_SWITCH)
     message(FATAL_ERROR "MPH-nx: configure with the devkitPro Switch toolchain")
 endif()
 
-set(MPHNX_VERSION "switch-test8" CACHE STRING "Version string shown in logs and hbmenu")
+set(MPHNX_VERSION "switch-test9" CACHE STRING "Version string shown in logs and hbmenu")
 set(MPHNX_TITLE "MPH-nx" CACHE STRING "Name shown in hbmenu")
 option(MPHNX_PIE_LIBS "Compile the runner's static libraries (game banks included) as -fPIE instead of -fPIC" ON)
 set(MPHNX_PERF_BANK_DIR "" CACHE PATH "Flat-AOT mph_perf_arm9 bank (nds_recompile --flat-execution); empty = faithful only")
@@ -40,7 +40,7 @@ add_subdirectory("${NDSRECOMP_ROOT}/runner" "${CMAKE_BINARY_DIR}/runner")
 
 set(_runner_dir "${NDSRECOMP_ROOT}/runner")
 
-# Speed: on since switch-test8 (test5 build B measured no clear gain alone). CMake builds static libraries as
+# Speed: on since switch-test9 (test5 build B measured no clear gain alone). CMake builds static libraries as
 # -fPIC, which reaches every global (guest registers, cycle counters, flags)
 # through the GOT: one extra load per access, several per guest instruction.
 # They only ever link into this PIE executable, so -fPIE is valid and lets the
