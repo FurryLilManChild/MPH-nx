@@ -468,6 +468,19 @@ int main(int argc, char** argv) {
     add("--save-path"); add(app + "/mph.sav");
     add("--firmware-state-path"); add(app + "/firmware-state.bin");
     add("--runtime-settings-path"); add(app + "/runtime-settings.ini");
+    // Game code model, chosen in the MPH-nx menu (applies at launch):
+    // cpu_core=1 selects the flat-AOT ARM9 code, otherwise faithful.
+    {
+        bool flat = false;
+        if (FILE* f = fopen((app + "/mph-nx-settings.ini").c_str(), "r")) {
+            char line[160];
+            while (fgets(line, sizeof line, f))
+                if (strncmp(line, "cpu_core=", 9) == 0) flat = atoi(line + 9) == 1;
+            fclose(f);
+        }
+        add("--execution-model"); add(flat ? "performance" : "faithful");
+        std::printf("[mph-nx] game code: %s\n", flat ? "flat (performance)" : "accurate (faithful)");
+    }
     add("--diagnostics"); add("on");
     add("--diagnostics-dir"); add(diag);
     add("--diagnostics-interval-ms"); add("2000");

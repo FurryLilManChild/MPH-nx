@@ -68,6 +68,15 @@ NDS_RECOMPILE="${NDS_RECOMPILE:-}"
 [ -n "$NDS_RECOMPILE" ] || NDS_RECOMPILE="$(find "$BUILD_DIR/host-gen" "$MPH_ROOT/build-gen" -name nds_recompile -type f 2>/dev/null | head -1 || true)"
 [ -n "$NDS_RECOMPILE" ] || die "nds_recompile host tool not found"
 
+PERF_DIR="$BUILD_DIR/perfgen"
+if [ ! -f "$PERF_DIR/mph_perf_arm9_dispatch.c" ]; then
+  say "  flat-AOT ARM9 bank"
+  mkdir -p "$PERF_DIR"
+  "$NDS_RECOMPILE" --config "$MPH_ROOT/generated/inputs/arm9.toml" --bin "$MPH_ROOT/generated/inputs/arm9.bin" \
+    --out "$PERF_DIR" --bank mph_perf_arm9 --shards 16 --stable-address-shards --max-function-bytes 512 \
+    --validate-live-bytes --flat-execution >/dev/null || die "flat bank generation failed"
+fi
+
 say "4/6 BIOS banks"
 GEN="$BUILD_DIR/gen"
 mkdir -p "$GEN"
@@ -87,6 +96,7 @@ INC="$COMPAT;/opt/devkitpro/libnx/include;/opt/devkitpro/portlibs/switch/include
   -DMPHNX_TITLE='$TITLE' \
   -DMPHNX_PIE_LIBS=$PIE_LIBS \
   -DMPHNX_LEAN=$LEAN \
+  -DMPHNX_PERF_BANK_DIR='$PERF_DIR' \
   -DNDSRECOMP_ROOT='$NDSRECOMP_ROOT' \
   -DNDS_GENERATED_DIR='$GEN' \
   -DNDS_TITLE_BANK_DIR='$MPH_ROOT/generated/recomp' \

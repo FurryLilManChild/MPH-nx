@@ -16,6 +16,7 @@ endif()
 set(MPHNX_VERSION "switch-test8" CACHE STRING "Version string shown in logs and hbmenu")
 set(MPHNX_TITLE "MPH-nx" CACHE STRING "Name shown in hbmenu")
 option(MPHNX_PIE_LIBS "Compile the runner's static libraries (game banks included) as -fPIE instead of -fPIC" ON)
+set(MPHNX_PERF_BANK_DIR "" CACHE PATH "Flat-AOT mph_perf_arm9 bank (nds_recompile --flat-execution); empty = faithful only")
 option(MPHNX_LEAN "Lean ARM9 bank bodies: no per-instruction diagnostics, fixed cached code-fetch cost" ON)
 set(NDSRECOMP_ROOT "" CACHE PATH "Pinned, patched ndsrecomp checkout")
 if(NOT EXISTS "${NDSRECOMP_ROOT}/runner/CMakeLists.txt")
@@ -62,6 +63,38 @@ if(MPHNX_LEAN)
     # See the MPH-nx lean block at the end of recompiler/armv4t/runtime_arm.h.
     target_compile_definitions(nds_banks PRIVATE MPHNX_LEAN=1)
     message(STATUS "MPH-nx: lean ARM9 bank bodies")
+endif()
+
+if(MPHNX_PERF_BANK_DIR)
+    # Upstream's portable flat-AOT execution model (built for MKDS) applied to
+    # MPH: guest registers and cycles live in locals through a code region,
+    # no per-instruction PC/yield/counter work. Selected at launch with
+    # --execution-model performance; the faithful banks stay linked.
+    file(GLOB _perf_bodies CONFIGURE_DEPENDS "${MPHNX_PERF_BANK_DIR}/mph_perf_arm9_[0-9][0-9].c")
+    set(_perf_dispatch "${MPHNX_PERF_BANK_DIR}/mph_perf_arm9_dispatch.c")
+    if(NOT _perf_bodies OR NOT EXISTS "${_perf_dispatch}")
+        message(FATAL_ERROR "MPH-nx: flat bank missing in ${MPHNX_PERF_BANK_DIR}")
+    endif()
+    file(READ "${_perf_dispatch}" _perf_text LIMIT 4096)
+    if(NOT _perf_text MATCHES "ndsrecomp-flat-aot-v3")
+        message(FATAL_ERROR "MPH-nx: ${_perf_dispatch} is not a flat-AOT bank")
+    endif()
+    add_library(nds_mph_perf_banks STATIC ${_perf_bodies} "${_perf_dispatch}")
+    target_include_directories(nds_mph_perf_banks PRIVATE
+        "${NDSRECOMP_ROOT}/recompiler/armv4t"
+        "${NDSRECOMP_ROOT}/external/arm-recomp-core/common"
+        "${NDSRECOMP_ROOT}/external/arm-recomp-core/profiles/armv4t_gba"
+        "${MPHNX_PERF_BANK_DIR}")
+    target_compile_definitions(nds_mph_perf_banks PRIVATE NDS_STATIC_CPU=0)
+    target_compile_options(nds_mph_perf_banks PRIVATE -w -O2 -g0)
+    if(MPHNX_PIE_LIBS)
+        set_target_properties(nds_mph_perf_banks PROPERTIES POSITION_INDEPENDENT_CODE OFF)
+        target_compile_options(nds_mph_perf_banks PRIVATE -fPIE
+            "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/compat/mphnx_hidden.h")
+    endif()
+    target_link_libraries(nds_runner PRIVATE nds_mph_perf_banks)
+    target_compile_definitions(nds_runner PRIVATE NDS_MPH_FLAT_PERFORMANCE=1)
+    message(STATUS "MPH-nx: flat-AOT ARM9 bank linked from ${MPHNX_PERF_BANK_DIR}")
 endif()
 
 # Upstream main() becomes nds_upstream_main(); the Switch entry point calls it.
