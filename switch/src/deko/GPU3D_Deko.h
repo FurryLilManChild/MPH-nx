@@ -71,6 +71,7 @@ private:
     dk::Fence FinalOutputFence[2] = {};
     int OutputSlot = -1;      // slot holding the latest submitted frame
     int PrevSlot = -1;        // the frame before it (finished by now)
+    int SlotSwap[2] = {-1, -1}; // POWCNT1 bit 15 when each slot was rendered
     int ShownSlot = -1;       // what GetLine returns this frame
     bool OutputWaited = false;
 public:

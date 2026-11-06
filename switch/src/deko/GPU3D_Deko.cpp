@@ -22,6 +22,7 @@ int visiblePolygon;
 
 u32 stupidTextureNum = 0;
 
+uint16_t nds_powercontrol9();  // runner io.cpp: ARM9 POWCNT1
 namespace melonDS
 {
 
@@ -1387,6 +1388,7 @@ void DekoRenderer::RenderFrame(GPU& gpu)
     UploadBuf.LastFlushBuffer = 0;
     if (OutputSlot != (int)curSlice) PrevSlot = OutputSlot;
     OutputSlot = (int)curSlice;
+    SlotSwap[curSlice] = (nds_powercontrol9() >> 15) & 1;
     OutputWaited = false;
 
     /*u64 starttime = armGetSystemTick();
@@ -1459,14 +1461,18 @@ u32* DekoRenderer::GetLine(int line)
         // stalling the emulation thread (3D can lag 2D by one frame, and the
         // shown sequence never goes backwards).
         ShownSlot = OutputSlot;
-        if (g_nx_3d_steady && PrevSlot >= 0)
+        // The previous frame may stand in only when it was drawn for the same
+        // screen. Dual-screen 3D (MPH menus) flips the screen swap bit every
+        // frame, so there the previous 3D frame belongs to the other screen.
+        const bool prevSameScreen = PrevSlot >= 0 && SlotSwap[PrevSlot] == SlotSwap[OutputSlot];
+        if (g_nx_3d_steady && prevSameScreen)
         {
             ShownSlot = PrevSlot;
             FinalOutputFence[PrevSlot].wait();  // normally already done
         }
         else if (FinalOutputFence[OutputSlot].wait(0) != DkResult_Success)
         {
-            if (PrevSlot >= 0)
+            if (prevSameScreen)
             {
                 ShownSlot = PrevSlot;
                 FinalOutputFence[PrevSlot].wait();  // normally already done
