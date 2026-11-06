@@ -105,10 +105,7 @@ if(MPHNX_DEKO_SHADERS)
     target_sources(nds_runner PRIVATE
         "${_deko}/nx_deko.cpp" "${_deko}/GpuMemHeap.cpp" "${_deko}/UploadBuffer.cpp"
         "${_deko}/GPU3D_Deko.cpp" "${MPHNX_DEKO_SHADERS}")
-    set_source_files_properties("${_deko}/nx_deko.cpp" "${_deko}/GpuMemHeap.cpp"
-        "${_deko}/UploadBuffer.cpp" "${_deko}/GPU3D_Deko.cpp"
-        PROPERTIES INCLUDE_DIRECTORIES "${_deko};${NDSRECOMP_ROOT}/runner/vendor/melonds"
-                   COMPILE_DEFINITIONS "XXH_INLINE_ALL=1")
+    target_include_directories(nds_runner PRIVATE "${_deko}")
     target_compile_definitions(nds_runner PRIVATE MPHNX_DEKO3D=1)
     target_link_libraries(nds_runner PRIVATE deko3d)
     message(STATUS "MPH-nx: deko3d GPU 3D renderer from ${MPHNX_DEKO_SHADERS}")
