@@ -28,7 +28,7 @@
 int nds_upstream_main(int argc, char** argv);  // upstream main.cpp, renamed at compile time
 
 #ifndef MPHNX_VERSION
-#define MPHNX_VERSION "switch-test6"
+#define MPHNX_VERSION "switch-test7"
 #endif
 
 static const char* kAppDir = "/switch/mph-nx";
@@ -53,8 +53,11 @@ static void open_logs() {
     const std::string err = std::string(kLogDir) + "/mph-nx.err.log";
     rotate(out, std::string(kLogDir) + "/mph-nx.prev.log");
     rotate(err, std::string(kLogDir) + "/mph-nx.prev.err.log");
-    if (freopen(out.c_str(), "a", stdout)) setvbuf(stdout, nullptr, _IOLBF, 0);
-    if (freopen(err.c_str(), "a", stderr)) setvbuf(stderr, nullptr, _IOLBF, 0);
+    // Fully buffered: a line-buffered SD log costs a file-system call per
+    // line on the emulation thread. The heartbeat thread flushes once a second.
+    static char out_buf[64 * 1024], err_buf[64 * 1024];
+    if (freopen(out.c_str(), "a", stdout)) setvbuf(stdout, out_buf, _IOFBF, sizeof out_buf);
+    if (freopen(err.c_str(), "a", stderr)) setvbuf(stderr, err_buf, _IOFBF, sizeof err_buf);
 }
 
 // ---------------------------------------------------------------------------
@@ -273,9 +276,13 @@ static Thread g_heartbeat;
 
 static void heartbeat_main(void*) {
     u64 start = armGetSystemTick();
+    unsigned tick = 0;
     while (g_heartbeat_run.load()) {
-        svcSleepThread(5000000000ull);
+        svcSleepThread(1000000000ull);
         if (!g_heartbeat_run.load()) break;
+        std::fflush(stderr);
+        std::fflush(stdout);
+        if (++tick % 5u) continue;
         u64 used = 0, total = 0;
         svcGetInfo(&used, InfoType_UsedMemorySize, CUR_PROCESS_HANDLE, 0);
         svcGetInfo(&total, InfoType_TotalMemorySize, CUR_PROCESS_HANDLE, 0);
@@ -298,6 +305,7 @@ static void heartbeat_main(void*) {
 extern "C" unsigned int g_cpu[];  // guest CPU state; R[15] is word 15 (C struct in the runtime)
 
 static std::atomic<bool> g_prof_run{true};
+static char g_prof_name[48] = "profile.txt";  // per-launch name set in main
 static Thread g_prof;
 static Handle g_prof_target = 0;
 
@@ -330,7 +338,7 @@ static void prof_dump(FILE* f, const char* name, const ProfPhase& ph) {
 
 static void prof_write(const ProfPhase& play, const ProfPhase& load, u64 failed) {
     const std::string tmp = std::string(kLogDir) + "/profile.tmp";
-    const std::string out = std::string(kLogDir) + "/profile.txt";
+    const std::string out = std::string(kLogDir) + "/" + g_prof_name;
     FILE* f = std::fopen(tmp.c_str(), "w");
     if (!f) return;
     std::fprintf(f, "# mph-nx profile, build %s, module size 0x%llx, unreadable %llu\n",
@@ -481,10 +489,16 @@ int main(int argc, char** argv) {
     cargv.push_back(nullptr);
     std::fflush(stdout);
 
+    {
+        const std::time_t t = std::time(nullptr);
+        std::tm tmv{};
+        localtime_r(&t, &tmv);
+        std::strftime(g_prof_name, sizeof g_prof_name, "profile-%Y%m%d-%H%M%S.txt", &tmv);
+    }
     g_prof_target = threadGetCurHandle();
     if (R_SUCCEEDED(threadCreate(&g_prof, prof_main, nullptr, nullptr, 0x20000, 0x2B, 2))) {
         threadStart(&g_prof);
-        std::printf("[profile] sampling the emulation thread into logs/profile.txt\n");
+        std::printf("[profile] sampling the emulation thread into logs/%s\n", g_prof_name);
     }
     const int rc = nds_upstream_main((int)args.size(), cargv.data());
     g_prof_run.store(false);
@@ -498,5 +512,8 @@ int main(int argc, char** argv) {
     nx_clocks_restore();
     std::fflush(stdout);
     std::fflush(stderr);
-    return rc;
+    // Leave without running static destructors: the runner's worker and
+    // render threads are still parked at this point, and tearing their
+    // objects down crashed both test6 quits after a clean shutdown.
+    _exit(rc);
 }

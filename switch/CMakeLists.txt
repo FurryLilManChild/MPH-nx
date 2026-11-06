@@ -13,7 +13,7 @@ if(NOT NINTENDO_SWITCH)
     message(FATAL_ERROR "MPH-nx: configure with the devkitPro Switch toolchain")
 endif()
 
-set(MPHNX_VERSION "switch-test6" CACHE STRING "Version string shown in logs and hbmenu")
+set(MPHNX_VERSION "switch-test7" CACHE STRING "Version string shown in logs and hbmenu")
 set(MPHNX_TITLE "MPH-nx" CACHE STRING "Name shown in hbmenu")
 option(MPHNX_PIE_LIBS "Compile the runner's static libraries (game banks included) as -fPIE instead of -fPIC" OFF)
 set(NDSRECOMP_ROOT "" CACHE PATH "Pinned, patched ndsrecomp checkout")
