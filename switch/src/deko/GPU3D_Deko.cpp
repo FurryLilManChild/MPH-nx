@@ -1443,6 +1443,10 @@ void DekoRenderer::RestartFrame(GPU& gpu)
 
 }
 unsigned long long g_nx_deko_late_frames = 0;
+// MPH-nx test11: steady 3D pacing. Always show the previous finished frame
+// (a constant one-frame 3D delay) instead of alternating between the newest
+// and the previous one whenever the GPU runs a little late.
+bool g_nx_3d_steady = true;
 namespace melonDS {
 u32* DekoRenderer::GetLine(int line)
 {
@@ -1455,7 +1459,12 @@ u32* DekoRenderer::GetLine(int line)
         // stalling the emulation thread (3D can lag 2D by one frame, and the
         // shown sequence never goes backwards).
         ShownSlot = OutputSlot;
-        if (FinalOutputFence[OutputSlot].wait(0) != DkResult_Success)
+        if (g_nx_3d_steady && PrevSlot >= 0)
+        {
+            ShownSlot = PrevSlot;
+            FinalOutputFence[PrevSlot].wait();  // normally already done
+        }
+        else if (FinalOutputFence[OutputSlot].wait(0) != DkResult_Success)
         {
             if (PrevSlot >= 0)
             {

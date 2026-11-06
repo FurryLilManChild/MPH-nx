@@ -2,6 +2,11 @@
 
 Newest first.
 
+## 2026-11-06: switch-test10 results, switch-test11
+
+- test10: deko3d presenter works (present 0.5 ms per frame). The saved CPU sync was still Accurate (64) from test8, so test9 and the first test10 run never opened a wide window. With Fastest (512) the hallway went from 0.73x to about 0.85x, but 30 to 97% of windows were still ended by I/O fences (up to 22,000 rounds per frame in a heavy stretch). Profile: game code about 20% of emulation time; dispatcher 16%, scheduler 12.5%, bus 12.5%, per-store code-write bookkeeping 7%. About 28% of frames showed the previous 3D frame.
+- test11: no fence on 3D status/matrix reads (nds_gpu3d_read already syncs the geometry engine, as melonDS does); per-class fence counters; CPU sync saved under a new key so the default Fastest (512) applies once; fast writes in flat bodies (DTCM and main-RAM 64-byte chunks that hold no validated code skip generation bumps and invalidation, provenance marks kept; chunks are marked before any cache entry or static guard captures a page generation); return chaining (out-of-region transfers in flat regions tail-call the target through the dispatcher's fast slot; fast slots are dropped on any dispatch epoch change); run through I/O (a device access that changed neither cycles nor the slice limit no longer ends the region); steady 3D pacing (always show the previous finished frame). All five are live toggles under Speed tests.
+
 ## 2026-11-06: switch-test9 results, switch-test10
 
 - test9 (flat + deko3d + block linking): median 28.7 fps, about +30% over test8. Profile by category on the emulation thread: game code 10%, dispatch 22%, mesa/GL/kernel 22% (SDL texture upload allocates a new GPU buffer per frame), scheduler 13%, memory helpers 10%. The ARM9 is guest-halted at 89% of round starts; rounds are about 3,500 to 4,500 per frame, set by device deadlines (SPU 1024 cycles, RTC 1022, LCD) and by every hardware divide ending the slice.
