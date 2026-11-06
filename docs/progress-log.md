@@ -2,6 +2,12 @@
 
 Newest first.
 
+## 2026-11-06: switch-test7 results, switch-test8
+
+- test7: startup about 2 s (from about 10); card reads instant inside MPH's PIO loop; CPU sync windows had no effect (about 3,500 scheduler rounds per frame on every setting).
+- Research: melonDS for Switch (RSDuck, release 6) gets its speed from an ARM64 JIT (block cycle sums, register cache, fastmem, block linking) plus deko3d 2D/3D. DrasticDS_nx keeps DraStic's software 3D and presents through deko3d, Vulkan or OpenGL.
+- test8: lean ARM9 bank bodies and -fPIE banks; upstream's portable flat-AOT generator applied to MPH's ARM9 binary (mph_perf_arm9, 22,503 functions), selectable at launch (--execution-model performance); RSDuck's deko3d compute 3D renderer ported to the object-based melonDS API with a CPU-readable output buffer for the software 2D compositor, selectable at launch; CPU sync window counters and a no-fence test setting; live dispatch cache size; buffered diagnostics; per-launch log names.
+
 ## 2026-11-05: switch-test6 results, switch-test7
 
 - test6 profile (2 ms host samples of the emulation thread): about 25 to 30% generated guest code, about 20% dispatcher, 9% scheduler and timers, 7% memory bus, 5% I/O and DMA, 5% graphics emulation plus 4% waiting on the 3D thread, 3% GL texture upload in mesa.
