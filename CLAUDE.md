@@ -17,6 +17,7 @@ Native Nintendo Switch homebrew port of Metroid Prime: Hunters (Nintendo DS, USA
 - Commit as `FurryLilManChild <346934328+FurryLilManChild@users.noreply.github.com>`.
 - Never ship a Switch build without its renderer, sound, input or game code. Check the artifact before handing it over.
 - Upstream sources stay on pinned commits. Switch changes go in `switch/patches/*.patch`, applied idempotently by the build script.
+- WE pick the path. Upstream projects (ndsrecomp, MetroidPrimeHuntersRecomp, melonDS, HuntersRecomp) are resources to learn from and pick pieces from, never the design. The goal is a native static recompilation: game functions are Switch functions with real calls and returns, game memory is plain Switch memory, timing is coarse and event-driven, and only hardware registers go through a hardware layer. Pinning upstream commits is source hygiene, not a design constraint; subsystems we write live in this repo.
 - Be honest about expectations: say what each test is for and what Mark should see.
 
 ## Upstream pins
