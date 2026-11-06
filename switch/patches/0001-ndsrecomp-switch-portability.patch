@@ -391,7 +391,7 @@ index b6a3e1a..592399b 100644
      if (std::rename(temporary.c_str(), save_path.c_str()) != 0) {
          set_error(error, "cannot replace save file: " +
 diff --git a/runner/src/bus.cpp b/runner/src/bus.cpp
-index d9e6d41..543389f 100644
+index d9e6d41..5e86f82 100644
 --- a/runner/src/bus.cpp
 +++ b/runner/src/bus.cpp
 @@ -334,6 +334,12 @@ void watch_push(uint8_t write, uint8_t width, uint32_t addr, uint32_t value) {
@@ -407,6 +407,27 @@ index d9e6d41..543389f 100644
      BusEvent& e = g_ring[g_ring_w];
      e.seq = ++g_ring_seq;
      e.cpu = static_cast<uint8_t>(g_nds_active);
+@@ -530,6 +536,9 @@ uint32_t g_memt_dtcm_base = 0;
+ uint32_t g_memt_dtcm_size = 0;    // dtcm_enable ? dtcm_size : 0
+ }
+ 
++#if defined(__SWITCH__)
++extern "C" { void (*g_nx_remap_hook)(void) = nullptr; }
++#endif
+ void bus_fast_refresh() {
+     ++g_busf_mapping_generation;
+     g_memt_itcm_limit = g_cp15.itcm_enable ? g_cp15.itcm_size : 0u;
+@@ -603,6 +612,10 @@ void bus_fast_refresh() {
+             ? std::min<uint32_t>(g_cp15.dtcm_size,
+                                  static_cast<uint32_t>(g_dtcm.size()))
+             : 0u;
++#if defined(__SWITCH__)
++    // MPH-nx native ARM9: its page table mirrors these windows.
++    if (g_nx_remap_hook) g_nx_remap_hook();
++#endif
+ }
+ 
+ void bus_load_arm9_bios(const uint8_t* p, uint32_t n) {
 diff --git a/runner/src/debug_server.cpp b/runner/src/debug_server.cpp
 index bf4ffb2..1f122af 100644
 --- a/runner/src/debug_server.cpp
@@ -453,7 +474,7 @@ index 022a1af..8c31a75 100644
  #endif
      if (supported) {
 diff --git a/runner/src/frontend.cpp b/runner/src/frontend.cpp
-index 7d9d4eb..059dc0e 100644
+index 7d9d4eb..93649eb 100644
 --- a/runner/src/frontend.cpp
 +++ b/runner/src/frontend.cpp
 @@ -4,6 +4,7 @@
@@ -464,7 +485,7 @@ index 7d9d4eb..059dc0e 100644
  #include <algorithm>
  #include <array>
  #include <atomic>
-@@ -215,6 +216,65 @@ void observe_top_black_bands(const uint32_t* pixels, uint64_t frame,
+@@ -215,6 +216,66 @@ void observe_top_black_bands(const uint32_t* pixels, uint64_t frame,
  #include "recomp_runtime_ui.h"
  
  #include "frontend_latency.h"
@@ -497,6 +518,7 @@ index 7d9d4eb..059dc0e 100644
 +extern bool g_nx_fast_sched;
 +extern bool g_nx_fence_3d;
 +extern bool g_nx_fence_card;
++extern "C" __attribute__((weak)) void nr_stats_snapshot(unsigned long long* out, unsigned n);
 +extern unsigned long long g_nx_fence_class[8];
 +extern "C" {
 +extern uint32_t g_nx_fast_writes, g_nx_far_chain, g_nx_io_continue;
@@ -530,7 +552,7 @@ index 7d9d4eb..059dc0e 100644
  
  namespace {
  
-@@ -815,6 +875,12 @@ bool sdl_init_frontend() {
+@@ -815,6 +876,12 @@ bool sdl_init_frontend() {
      return SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS |
                      SDL_INIT_GAMECONTROLLER);
  #else
@@ -543,7 +565,7 @@ index 7d9d4eb..059dc0e 100644
      return SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS |
                      SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) == 0;
  #endif
-@@ -1185,6 +1251,130 @@ constexpr const char* kRuntimeMouseSensitivityKey =
+@@ -1185,6 +1252,130 @@ constexpr const char* kRuntimeMouseSensitivityKey =
  constexpr const char* kRuntimeResumeKey = "system.resume";
  constexpr const char* kRuntimeQuitKey = "system.quit";
  
@@ -674,7 +696,7 @@ index 7d9d4eb..059dc0e 100644
  struct RuntimeMenuState {
      NdsFrontendOptions* options = nullptr;
      bool* running = nullptr;
-@@ -1235,6 +1425,27 @@ int runtime_menu_get_value(void* context, const RecompRuntimeUiItem* item,
+@@ -1235,6 +1426,27 @@ int runtime_menu_get_value(void* context, const RecompRuntimeUiItem* item,
                             int* value_out) {
      auto* state = static_cast<RuntimeMenuState*>(context);
      if (!state || !state->options || !item || !value_out) return 0;
@@ -702,7 +724,7 @@ index 7d9d4eb..059dc0e 100644
      if (std::strcmp(item->key, kRuntimeMouseSensitivityKey) == 0) {
          *value_out = state->options->relative_mouse_sensitivity;
          return 1;
-@@ -1246,6 +1457,83 @@ int runtime_menu_set_value(void* context, const RecompRuntimeUiItem* item,
+@@ -1246,6 +1458,83 @@ int runtime_menu_set_value(void* context, const RecompRuntimeUiItem* item,
                             int value) {
      auto* state = static_cast<RuntimeMenuState*>(context);
      if (!state || !state->options || !item) return 0;
@@ -786,7 +808,7 @@ index 7d9d4eb..059dc0e 100644
      if (std::strcmp(item->key, kRuntimeMouseSensitivityKey) == 0) {
          if (value < 10 || value > 400) return 0;
          state->options->relative_mouse_sensitivity =
-@@ -1267,6 +1555,17 @@ int runtime_menu_run_action(void* context, const RecompRuntimeUiItem* item) {
+@@ -1267,6 +1556,17 @@ int runtime_menu_run_action(void* context, const RecompRuntimeUiItem* item) {
          if (state->running) *state->running = false;
          return 1;
      }
@@ -804,7 +826,7 @@ index 7d9d4eb..059dc0e 100644
      return 0;
  }
  
-@@ -1323,6 +1622,15 @@ bool runtime_menu_key_input(SDL_Scancode scancode,
+@@ -1323,6 +1623,15 @@ bool runtime_menu_key_input(SDL_Scancode scancode,
  bool runtime_menu_controller_input(SDL_GameControllerButton button,
                                     RecompRuntimeUiInput* input) {
      if (!input) return false;
@@ -820,7 +842,7 @@ index 7d9d4eb..059dc0e 100644
      switch (button) {
          case SDL_CONTROLLER_BUTTON_START:
              *input = RECOMP_RUNTIME_UI_INPUT_TOGGLE;
-@@ -1456,6 +1764,49 @@ void destroy_presentation(FrontendPresentation& presentation) {
+@@ -1456,6 +1765,49 @@ void destroy_presentation(FrontendPresentation& presentation) {
      presentation.windows[1] = nullptr;
  }
  
@@ -870,7 +892,7 @@ index 7d9d4eb..059dc0e 100644
  SDL_Renderer* create_renderer(SDL_Window* window) {
  #if defined(NDS_HAVE_SDL3)
      // Driver order is NOT left to SDL3's default here. SDL3 orders its Windows
-@@ -1518,6 +1869,16 @@ SDL_Window* create_window(const char* title, int x, int y, int w, int h,
+@@ -1518,6 +1870,16 @@ SDL_Window* create_window(const char* title, int x, int y, int w, int h,
          SDL_SetWindowPosition(window, x, y);
      return window;
  #else
@@ -887,7 +909,7 @@ index 7d9d4eb..059dc0e 100644
      return SDL_CreateWindow(title, x, y, w, h, static_cast<uint32_t>(flags));
  #endif
  }
-@@ -1778,6 +2139,18 @@ bool create_presentation(const NdsFrontendOptions& options,
+@@ -1778,6 +2140,18 @@ bool create_presentation(const NdsFrontendOptions& options,
      const int first_height = presentation.separate
          ? kScreenHeight * kWindowScale
          : kScreenHeight * 2 * kWindowScale;
@@ -906,7 +928,7 @@ index 7d9d4eb..059dc0e 100644
      const uint64_t top_window_flags =
          SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI |
          (presentation.gl_top
-@@ -1891,15 +2264,23 @@ bool create_presentation(const NdsFrontendOptions& options,
+@@ -1891,15 +2265,23 @@ bool create_presentation(const NdsFrontendOptions& options,
              !presentation.separate && screen == 0
                  ? kScreenHeight * 2 : kScreenHeight;
          if (screen == 0 || presentation.separate) {
@@ -931,7 +953,7 @@ index 7d9d4eb..059dc0e 100644
  #endif
          }
          presentation.textures[screen] = SDL_CreateTexture(
-@@ -2077,6 +2458,39 @@ struct OwnedPresentationFrame {
+@@ -2077,6 +2459,39 @@ struct OwnedPresentationFrame {
  };
  #endif
  
@@ -971,7 +993,7 @@ index 7d9d4eb..059dc0e 100644
  PresentationTicks present_screens(FrontendPresentation& presentation,
                                    const uint32_t* top_pixels,
                                    int top_width,
-@@ -2143,6 +2557,42 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
+@@ -2143,6 +2558,42 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
      }
      top_pixels = runtime_menu_overlay(
          runtime_ui, top_pixels, top_width, kScreenHeight);
@@ -1014,7 +1036,7 @@ index 7d9d4eb..059dc0e 100644
      uint64_t start = SDL_GetPerformanceCounter();
      SDL_UpdateTexture(presentation.textures[0], nullptr, top_pixels,
                        top_width * sizeof(uint32_t));
-@@ -2152,6 +2602,47 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
+@@ -2152,6 +2603,47 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
      if (!presentation.separate) {
          SDL_Renderer* renderer = presentation.renderers[0];
          start = SDL_GetPerformanceCounter();
@@ -1062,7 +1084,7 @@ index 7d9d4eb..059dc0e 100644
          SDL_SetRenderDrawColor(renderer, 20, 20, 20, 255);
          SDL_RenderClear(renderer);
          const SDL_Rect top_rect{
-@@ -2169,6 +2660,9 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
+@@ -2169,6 +2661,9 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
                                  virtual_stylus_x, virtual_stylus_y);
          draw_savestate_notice(renderer, bottom_rect, savestate_notice);
          ticks.draw += SDL_GetPerformanceCounter() - start;
@@ -1072,7 +1094,7 @@ index 7d9d4eb..059dc0e 100644
          start = SDL_GetPerformanceCounter();
          SDL_RenderPresent(renderer);
          ticks.swap += SDL_GetPerformanceCounter() - start;
-@@ -2446,6 +2940,18 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -2446,6 +2941,18 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
          options.virtual_stylus.enabled && !mph_prime_controls_available;
      MphPrimeBindingSet mph_prime_bindings{};
      MphPadBindingSet mph_pad_bindings{};
@@ -1091,7 +1113,7 @@ index 7d9d4eb..059dc0e 100644
      if (mph_prime_controls_available) {
          mph_prime_bindings = make_mph_prime_bindings(options.mph_bindings);
          mph_pad_bindings = make_mph_pad_bindings(options.mph_pad_bindings);
-@@ -2543,6 +3049,67 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -2543,6 +3050,67 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
      runtime_menu_config.items = runtime_menu_items;
      runtime_menu_config.item_count =
          sizeof(runtime_menu_items) / sizeof(runtime_menu_items[0]);
@@ -1159,7 +1181,7 @@ index 7d9d4eb..059dc0e 100644
      runtime_menu_config.callbacks.context = &runtime_menu_state;
      runtime_menu_config.callbacks.get_value = runtime_menu_get_value;
      runtime_menu_config.callbacks.set_value = runtime_menu_set_value;
-@@ -2552,6 +3119,10 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -2552,6 +3120,10 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
      runtime_menu_config.theme = "nds";
      runtime_menu_config.accept_label = "A / Enter";
      runtime_menu_config.back_label = "B / Backspace";
@@ -1170,7 +1192,7 @@ index 7d9d4eb..059dc0e 100644
      RecompRuntimeUi* runtime_ui =
          recomp_runtime_ui_create(&runtime_menu_config);
      if (!runtime_ui) {
-@@ -2561,6 +3132,14 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -2561,6 +3133,14 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
      bool mouse_down = false;
      bool touch_release_pending = false;
      uint32_t touch_frames_held = 0;
@@ -1185,7 +1207,7 @@ index 7d9d4eb..059dc0e 100644
      int64_t relative_delta_x = 0;
      int64_t relative_delta_y = 0;
      uint64_t relative_direct_writes = 0;
-@@ -3257,9 +3836,126 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3257,9 +3837,135 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                  relative_mouse_selftest_stage = 10;
              }
          }
@@ -1278,6 +1300,15 @@ index 7d9d4eb..059dc0e 100644
 +                                     (g_nx_io_cont_count - l_ioc) / fr, (g_nds_region_reference_steps - l_ss) / fr,
 +                                     fc[0] / fr, fc[1] / fr, fc[2] / fr, fc[3] / fr, fc[4] / fr, fc[5] / fr, fc[6] / fr,
 +                                     g_nx_fast_writes, g_nx_far_chain, g_nx_io_continue, g_nx_fence_3d ? 1 : 0, g_nx_fence_card ? 1 : 0, g_nx_3d_steady ? 1 : 0);
++                        if (nr_stats_snapshot) {
++                            static unsigned long long l_nr[16] = {};
++                            unsigned long long nr[16] = {};
++                            nr_stats_snapshot(nr, 16);
++                            double d[16];
++                            for (int i = 0; i < 16; ++i) { d[i] = (nr[i] - l_nr[i]) / fr; l_nr[i] = nr[i]; }
++                            std::fprintf(stderr, "[mph-nx] %s native per frame: services=%.0f yields=%.0f irqs=%.0f dyncalls=%.0f dynmiss=%.0f interp=%.0f swi=%.0f/%.0f redirects=%.0f ovscan=%.0f io=%.0f\n",
++                                         nx_now(), d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7], d[8], d[9], d[10]);
++                        }
 +                        l_far = g_nx_far_hits; l_ioc = g_nx_io_cont_count;
 +                        l_reg = g_nds_region_entries; l_ss = g_nds_region_reference_steps;
 +                    }
@@ -1312,7 +1343,7 @@ index 7d9d4eb..059dc0e 100644
              if (event.type == SDL_QUIT) {
                  release_relative_mouse();
                  running = false;
-@@ -3451,6 +4147,13 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3451,6 +4157,13 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                  clear_virtual_stylus();
                  publish_keys();
              }
@@ -1326,7 +1357,7 @@ index 7d9d4eb..059dc0e 100644
              if (event.type == SDL_CONTROLLERBUTTONDOWN ||
                  event.type == SDL_CONTROLLERBUTTONUP) {
                  RecompRuntimeUiInput menu_input{};
-@@ -3764,10 +4467,20 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3764,10 +4477,20 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                          publish_keys();
                      }
                  };
@@ -1347,7 +1378,7 @@ index 7d9d4eb..059dc0e 100644
              }
  
              if (!menu_open && virtual_stylus_available) {
-@@ -3818,7 +4531,11 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3818,7 +4541,11 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                  }
              }
  
@@ -1360,7 +1391,7 @@ index 7d9d4eb..059dc0e 100644
                  // Right stick -> camera aim; triggers act as bindable
                  // pseudo-buttons (defaults: RT shoot, LT scan-fire).
                  const float rx = SDL_GameControllerGetAxis(
-@@ -3989,6 +4706,85 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3989,6 +4716,85 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                      nds_set_touch(128, 96, true);
              }
          }
@@ -1446,7 +1477,7 @@ index 7d9d4eb..059dc0e 100644
          if (options.custom_gamepad_bindings) {
              // Button events handle digital bindings; poll signed axes here.
              // Each row has one source, so clearing an axis row cannot release
-@@ -4186,8 +4982,9 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -4186,8 +4992,9 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                  presentation, blend_cache.blended[0].data(), top_width,
                  blend_cache.blended[1].data(), bottom_width,
                  runtime_ui,
@@ -1458,7 +1489,7 @@ index 7d9d4eb..059dc0e 100644
                  savestate_notice.empty() ? nullptr : savestate_notice.c_str());
              if (!synthetic_ticks.ok) {
                  compute_failed = true;
-@@ -4210,14 +5007,18 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -4210,14 +5017,18 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
              presentation, top_pixels, top_width,
              bottom_pixels, bottom_width,
              runtime_ui,
@@ -1841,7 +1872,7 @@ index 45b561e..2915312 100644
 +#endif
  }
 diff --git a/runner/src/main.cpp b/runner/src/main.cpp
-index 4375eb7..d0c4e8e 100644
+index 4375eb7..cc1b76d 100644
 --- a/runner/src/main.cpp
 +++ b/runner/src/main.cpp
 @@ -6,6 +6,7 @@
@@ -1852,7 +1883,7 @@ index 4375eb7..d0c4e8e 100644
  #include <algorithm>
  #include <cstdint>
  #include <cstdio>
-@@ -148,14 +149,77 @@ extern "C" const unsigned g_dispatch_fw_arm7_pictochat_room_a_len;
+@@ -148,15 +149,78 @@ extern "C" const unsigned g_dispatch_fw_arm7_pictochat_room_a_len;
  #endif
  #endif
  
@@ -1891,8 +1922,8 @@ index 4375eb7..d0c4e8e 100644
      return std::vector<uint8_t>((std::istreambuf_iterator<char>(f)),
                                  std::istreambuf_iterator<char>());
 +#endif
-+}
-+
+ }
+ 
 +#if defined(__SWITCH__)
 +// The cartridge SHA-1 only depends on the file. Cache it beside the ROM,
 +// keyed by size and modification time, so later launches skip the hash.
@@ -1925,11 +1956,12 @@ index 4375eb7..d0c4e8e 100644
 +        }
 +    }
 +    return sha;
- }
++}
 +#endif
- 
++
  bool verify(const std::vector<uint8_t>& data, const char* want,
              const char* label) {
+     if (data.empty()) { std::fprintf(stderr, "[load] %s: missing/empty\n", label); return false; }
 @@ -353,7 +417,9 @@ int main(int argc, char** argv) {
      // savestate load as never-happened during the 2026-08-31 Kanden A/B and
      // cost the session an hour of phantom debugging. Unbuffered is what the C
@@ -1952,7 +1984,7 @@ index 4375eb7..d0c4e8e 100644
          std::fprintf(stderr, "[load] cartridge: %zu bytes, SHA-1 %s\n",
                       rom.size(), rom_sha1.c_str());
          if (!frontend_options.expected_rom_sha1.empty() &&
-@@ -2213,6 +2283,17 @@ int main(int argc, char** argv) {
+@@ -2213,6 +2283,31 @@ int main(int argc, char** argv) {
                                g_dispatch_fw_arm7_pictochat_room_a_len,
                                0x00000000u);
  #endif
@@ -1967,11 +1999,25 @@ index 4375eb7..d0c4e8e 100644
 +                                  g_dispatch_mph_perf_arm9_len, 0xFFFF0000u);
 +            std::fprintf(stderr, "[dispatch] registered flat MPH ARM9 bank\n");
 +        }
++#endif
++#if defined(__SWITCH__)
++        // MPH-nx native build: the main program is native code generated for
++        // USA Rev 1. Register only the title's ARM7 banks (the ARM7 binary is
++        // byte-identical in Rev 0 and Rev 1); every ARM9 bank stays out.
++        extern bool g_nx_drop_arm9_banks;
++        extern bool g_nx_native_build;
++        if (g_nx_native_build &&
++            rom_sha1 == "a8679d4f8dcb445cbe946a424241ef44901b0caf") {
++            g_nx_drop_arm9_banks = true;
++            nds_register_configured_title_banks("90164d1ac127ee5f9815ea4ae7de798c7b5fc629");
++            g_nx_drop_arm9_banks = false;
++            std::fprintf(stderr, "[dispatch] native ARM9; registered Rev 0 ARM7 banks for Rev 1\n");
++        } else
  #endif
          if (nds_register_configured_title_banks(rom_sha1.c_str())) {
              std::fprintf(stderr,
 diff --git a/runner/src/runtime_arm.cpp b/runner/src/runtime_arm.cpp
-index 0238a6a..779269b 100644
+index 0238a6a..bc41f52 100644
 --- a/runner/src/runtime_arm.cpp
 +++ b/runner/src/runtime_arm.cpp
 @@ -8,12 +8,13 @@
@@ -2092,7 +2138,24 @@ index 0238a6a..779269b 100644
  #if defined(NDS_ARM9_DYNARMIC)
      nds_arm9_native_note_write_pages(first,count);
  #endif
-@@ -1113,6 +1181,9 @@ extern "C" void nds_register_dispatch(int cpu, const DispatchEntry* t,
+@@ -1101,8 +1169,16 @@ extern "C" void nds_dispatch_bind_thread(void) {
+ #endif
+ }
+ 
++#if defined(__SWITCH__)
++bool g_nx_drop_arm9_banks = false;
++#endif
+ extern "C" void nds_register_dispatch(int cpu, const DispatchEntry* t,
+                                       unsigned len, uint32_t exc_base) {
++#if defined(__SWITCH__)
++    // MPH-nx native ARM9: Rev 0 ARM9 banks never register for the native
++    // program; the ARM7 banks (byte-identical code in Rev 1) still do.
++    if (g_nx_drop_arm9_banks && cpu == NDS_ARM9) return;
++#endif
+     NDS_ASSERT_DISPATCH_THREAD("nds_register_dispatch");
+     CpuCtx& ctx = g_ctx[cpu & 1];
+     ctx.banks.push_back({t, len});
+@@ -1113,6 +1189,9 @@ extern "C" void nds_register_dispatch(int cpu, const DispatchEntry* t,
      // upgrade from dispatcher to native for a target this bank now owns is
      // the slot's next resolve.
      link_epoch_bump();
@@ -2102,7 +2165,7 @@ index 0238a6a..779269b 100644
      if (++ctx.dispatch_epoch == 0u) {
          clear_dispatch_cache_cpu(cpu);
          ctx.dispatch_epoch = 1u;
-@@ -1141,6 +1212,9 @@ extern "C" void nds_unregister_dispatch(int cpu, const DispatchEntry* t,
+@@ -1141,6 +1220,9 @@ extern "C" void nds_unregister_dispatch(int cpu, const DispatchEntry* t,
      // Downgrade every slot back to the dispatcher; any that pointed into
      // this bank's bodies can no longer be reached without re-resolving.
      link_epoch_bump();
@@ -2112,7 +2175,7 @@ index 0238a6a..779269b 100644
      if (++ctx.dispatch_epoch == 0u) {
          clear_dispatch_cache_cpu(cpu);
          ctx.dispatch_epoch = 1u;
-@@ -1734,6 +1808,36 @@ void runtime_dispatch_impl(uint32_t target_pc, NdsLinkSlot* linked) {
+@@ -1734,6 +1816,36 @@ void runtime_dispatch_impl(uint32_t target_pc, NdsLinkSlot* linked) {
          g_cpu.R[15] = pc;
          runtime_trace_event(RUNTIME_TRACE_DISPATCH, pc, target_pc, 0, 0);
          const CpuCtx& c = g_ctx[g_nds_active];
@@ -2149,7 +2212,7 @@ index 0238a6a..779269b 100644
          StaticGuardScope guard_scope;
          // Same construction order and same operations as the former
          // `guard_scope.call(lookup_static_cached(c, pc, thumb))`: the guard
-@@ -1788,12 +1892,39 @@ void runtime_dispatch_impl(uint32_t target_pc, NdsLinkSlot* linked) {
+@@ -1788,12 +1900,39 @@ void runtime_dispatch_impl(uint32_t target_pc, NdsLinkSlot* linked) {
                  ++g_link_falls[g_nds_active];
              }
              entering_static = guard_scope.prepare(found);
@@ -2190,7 +2253,7 @@ index 0238a6a..779269b 100644
                  // Flat regions carry returns in guest LR/stack, not the old
                  // host call stack. A reference/HLE callee can complete while
                  // an older native caller is still on that host stack. Unwind
-@@ -2367,6 +2498,9 @@ extern "C" void runtime_init(void*) {
+@@ -2367,6 +2506,9 @@ extern "C" void runtime_init(void*) {
          ctx.dispatch_epoch = 1u;
          ctx.exc_base = 0u;
      }
@@ -2201,10 +2264,21 @@ index 0238a6a..779269b 100644
      clear_dispatch_cache_all();
      // dispatch_epoch restarts at 1 on reset, so the per-CPU epoch alone
 diff --git a/runner/src/scheduler.cpp b/runner/src/scheduler.cpp
-index a52d8db..776e4bf 100644
+index a52d8db..b9baa96 100644
 --- a/runner/src/scheduler.cpp
 +++ b/runner/src/scheduler.cpp
-@@ -84,6 +84,23 @@ constexpr int      kArm9ClockShift = 1;    // ARM9 runs at 2x the system clock
+@@ -27,6 +27,10 @@
+ #include "arm9_native.h"
+ #endif
+ 
++#if defined(__SWITCH__)
++// MPH-nx native ARM9: resumes the native program for this slice (nr_runtime).
++extern "C" { void (*g_nx_arm9_native_hook)(void) = nullptr; }
++#endif
+ namespace {
+ 
+ struct CpuSlot {
+@@ -84,6 +88,23 @@ constexpr int      kArm9ClockShift = 1;    // ARM9 runs at 2x the system clock
  bool performance_window_active=false;
  uint64_t performance_windows=0,performance_fences=0;
  constexpr uint64_t kIterCap        = 64;   // system cycles per outer iteration
@@ -2228,7 +2302,7 @@ index a52d8db..776e4bf 100644
  // Power-on periodic scheduler events in SYSTEM cycles. NextTarget scans RTC,
  // SPU and LCD even before their IRQs are enabled. They phase the 64-cycle CPU
  // rendezvous grid, so omitting a deadline can move an IPCSYNC write across the
-@@ -95,8 +112,13 @@ uint64_t next_scheduled_event_time() {
+@@ -95,8 +116,13 @@ uint64_t next_scheduled_event_time() {
      const uint64_t pos = g_sys_timestamp - line_base;
      const uint64_t lcd = (pos < kHblankStart) ? (line_base + kHblankStart)
                                                 : (line_base + kLine);
@@ -2243,7 +2317,28 @@ index a52d8db..776e4bf 100644
  
      // RTC ScheduleTimer carries the 33,513,982/32,768 fractional remainder,
      // so deadline N is floor(N*33513982/32768), starting at N=1 (1022).
-@@ -342,6 +364,9 @@ void scheduler_set_cpu_boot(int cpu, uint32_t entry, uint32_t sp,
+@@ -218,6 +244,10 @@ void run_slice(int cpu, uint32_t quantum) {
+     nds_slice_begin(cap);
+     if (nds_cpu_halted(cpu)) {
+         nds_cpu_wake(cpu);
++#if defined(__SWITCH__)
++        // MPH-nx native ARM9 delivers the interrupt itself when it resumes.
++        if (!(cpu == 0 && g_nx_arm9_native_hook))
++#endif
+         if (!(g_cpu.cpsr & CPSR_I_BIT) && nds_irq_pending(cpu))
+             runtime_irq(g_cpu.R[15]);
+     }
+@@ -234,6 +264,9 @@ void run_slice(int cpu, uint32_t quantum) {
+         nds_dispatch_tag(NDS_DISPATCH_CLASS_RESUME);
+ #if defined(NDS_ARM9_DYNARMIC)
+         if (!nds_arm9_native_run())
++#endif
++#if defined(__SWITCH__)
++        if (cpu == 0 && g_nx_arm9_native_hook) { (void)pc; (void)t; g_nx_arm9_native_hook(); } else
+ #endif
+             runtime_dispatch(pc | t);
+         // An exact-index stop reached in Tier 3 may have unwound through a
+@@ -342,6 +375,9 @@ void scheduler_set_cpu_boot(int cpu, uint32_t entry, uint32_t sp,
  
  void scheduler_run_round() {
      RoundActivityGuard round_activity;
@@ -2253,7 +2348,7 @@ index a52d8db..776e4bf 100644
      // melonDS-faithful interleave (docs/scheduler_design.md, Commit A). Each
      // outer iteration is capped at kIterCap SYSTEM cycles (or the next scheduled
      // event, whichever is sooner). ARM9 runs FIRST up to its target and may
-@@ -390,10 +415,17 @@ void scheduler_run_round() {
+@@ -390,10 +426,17 @@ void scheduler_run_round() {
                                      : ProfileClock::time_point{};
      auto phase_start = round_start;
  
@@ -2272,7 +2367,7 @@ index a52d8db..776e4bf 100644
      performance_window_active=quantum>kIterCap;
      if(performance_window_active)++performance_windows;
      struct WindowEnd {~WindowEnd(){performance_window_active=false;}} window_end;
-@@ -444,6 +476,46 @@ void scheduler_run_round() {
+@@ -444,6 +487,46 @@ void scheduler_run_round() {
      // normal 64-cycle cap (kIterationCycleMargin=8).
      if (ev < planned + 8u) planned = ev;
  
@@ -2319,7 +2414,7 @@ index a52d8db..776e4bf 100644
      // ARM9 first, to its target in ARM9 cycles; do NOT clamp its overshoot.
      const uint64_t arm9_target = planned << kArm9ClockShift;
      if (sample) phase_start = ProfileClock::now();
-@@ -572,6 +644,15 @@ void scheduler_performance_io_fence() {
+@@ -572,6 +655,15 @@ void scheduler_performance_io_fence() {
          nds_reschedule_slice((g_runtime_cycles+1u)>>1u);
      }
  }

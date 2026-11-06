@@ -5,6 +5,9 @@
 // command line and calls the upstream main (compiled as nds_upstream_main).
 
 #include <switch.h>
+#if defined(MPHNX_NATIVE)
+extern "C" void nr_install(void);
+#endif
 
 #include <atomic>
 #include <cerrno>
@@ -204,6 +207,19 @@ static bool ends_with_nds(const char* n) {
     return e[0] == '.' && (e[1] | 32) == 'n' && (e[2] | 32) == 'd' && (e[3] | 32) == 's';
 }
 
+// The ROM header's game code and version byte (0x0C and 0x1E).
+static bool rom_header(const std::string& p, char code[5], int* version) {
+    FILE* f = fopen(p.c_str(), "rb");
+    if (!f) return false;
+    unsigned char h[0x20];
+    const bool ok = fread(h, 1, sizeof h, f) == sizeof h;
+    fclose(f);
+    if (!ok) return false;
+    memcpy(code, h + 0x0C, 4); code[4] = 0;
+    *version = h[0x1E];
+    return true;
+}
+
 static std::string find_rom() {
     DIR* d = opendir(kAppDir);
     if (!d) return {};
@@ -213,6 +229,12 @@ static std::string find_rom() {
         std::string p = std::string(kAppDir) + "/" + de->d_name;
         struct stat st{};
         if (stat(p.c_str(), &st) == 0 && st.st_size == 64 * 1024 * 1024) {
+#if defined(MPHNX_NATIVE)
+            // The native build is generated for USA Rev 1 (AMHE, version 1).
+            char code[5]; int version = -1;
+            if (!rom_header(p, code, &version) || strcmp(code, "AMHE") != 0 || version != 1)
+                continue;
+#endif
             found = p;
             break;
         }
@@ -440,7 +462,11 @@ int main(int argc, char** argv) {
     if (rom.empty()) {
         show_message_and_wait(
             "  No ROM found.\n"
+#if defined(MPHNX_NATIVE)
+            "  Put your Metroid Prime Hunters (USA, Rev 1) .nds file\n"
+#else
             "  Put your Metroid Prime Hunters (USA, revision 0) .nds file\n"
+#endif
             "  in /switch/mph-nx/ on the SD card, next to mph-nx.nro.");
         return 0;
     }
@@ -471,7 +497,28 @@ int main(int argc, char** argv) {
     // No --fullscreen: the Switch window is created at 1280x720 (patch 0001).
     add("--mph-prime-controls"); add("on");
     add("--relative-mouse-touch"); add("on");  // upstream requires it for Prime controls
+#if defined(MPHNX_NATIVE)
+    // Rev 1 keeps its own save. The first launch starts from a copy of the
+    // Rev 0 save so progress carries over; mph.sav itself is never touched.
+    {
+        const std::string rev1 = app + "/mph-rev1.sav";
+        struct stat st{};
+        if (stat(rev1.c_str(), &st) != 0) {
+            if (FILE* in = fopen((app + "/mph.sav").c_str(), "rb")) {
+                if (FILE* out = fopen(rev1.c_str(), "wb")) {
+                    char buf[16384]; size_t n;
+                    while ((n = fread(buf, 1, sizeof buf, in)) > 0) fwrite(buf, 1, n, out);
+                    fclose(out);
+                    std::printf("[mph-nx] Rev 1 save started from a copy of mph.sav\n");
+                }
+                fclose(in);
+            }
+        }
+        add("--save-path"); add(rev1);
+    }
+#else
     add("--save-path"); add(app + "/mph.sav");
+#endif
     add("--firmware-state-path"); add(app + "/firmware-state.bin");
     add("--runtime-settings-path"); add(app + "/runtime-settings.ini");
     // Game code model, chosen in the MPH-nx menu (applies at launch):
@@ -486,8 +533,15 @@ int main(int argc, char** argv) {
             }
             fclose(f);
         }
+#if defined(MPHNX_NATIVE)
+        (void)flat;
+        nr_install();
+        add("--execution-model"); add("faithful");   // the ARM7 path; the ARM9 is native
+        std::printf("[mph-nx] game code: native (USA Rev 1)\n");
+#else
         add("--execution-model"); add(flat ? "performance" : "faithful");
         std::printf("[mph-nx] game code: %s\n", flat ? "flat (performance)" : "accurate (faithful)");
+#endif
         // Test10: the upstream diagnostics (performance JSON, sampled
         // attribution, coverage manifest) cost several percent of the
         // emulation thread. Off unless diagnostics=1 in mph-nx-settings.ini;
@@ -502,7 +556,9 @@ int main(int argc, char** argv) {
     add("--no-coverage-manifest");
     add("--diagnostics-dir"); add(diag);
     add("--diagnostics-interval-ms"); add("2000");
+#if !defined(MPHNX_NATIVE)
     add("--discover-static-misses");
+#endif
     add("--network"); add("off");
     add("--wfc"); add("off");
     add("--performance-governor"); add("off");

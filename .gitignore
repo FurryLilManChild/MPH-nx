@@ -39,3 +39,11 @@ vendor/
 # OS
 Thumbs.db
 .DS_Store
+
+# Native recompiler output (derived from the game)
+nrgen/
+nr_static_*.c
+nr_ov[0-9]*_*.c
+nr_tables.c
+nr_funcs.h
+__pycache__/

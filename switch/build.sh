@@ -25,10 +25,14 @@ MPH_ROM="${MPH_ROM:-$MPH_ROOT/Metroid Prime Hunters.nds}"
 BUILD_DIR="${BUILD_DIR:-/home/claude/build/nx}"
 DKRUN="${DKRUN:-/home/claude/dk.sh}"
 JOBS="${JOBS:-2}"
-VERSION="${MPHNX_VERSION:-switch-test13}"
+VERSION="${MPHNX_VERSION:-switch-native1}"
 TITLE="${MPHNX_TITLE:-MPH-nx}"
 PIE_LIBS="${MPHNX_PIE_LIBS:-ON}"
 LEAN="${MPHNX_LEAN:-ON}"
+# NATIVE=1 (default): the native ARM9 program for USA Rev 1 (tools/nrecomp).
+NATIVE="${NATIVE:-1}"
+MPH_ROM_REV1="${MPH_ROM_REV1:-/home/claude/private/mph-usa-rev1.nds}"
+ROM_SHA1_REV1=a8679d4f8dcb445cbe946a424241ef44901b0caf
 
 NDSRECOMP_PIN=179ac63d9e4055e1218d61b3fd03c34a94880a6e
 MPH_PIN=61ac84aac262645e446ea28e3d4db3567e2dba8c
@@ -77,6 +81,16 @@ if [ ! -f "$PERF_DIR/mph_perf_arm9_dispatch.c" ]; then
     --validate-live-bytes --flat-execution >/dev/null || die "flat bank generation failed"
 fi
 
+NATIVE_DIR=""
+if [ "$NATIVE" = 1 ]; then
+  say "  native ARM9 program (USA Rev 1)"
+  [ -f "$MPH_ROM_REV1" ] || die "Rev 1 ROM not found at $MPH_ROM_REV1"
+  [ "$(sha1sum "$MPH_ROM_REV1" | cut -c1-40)" = "$ROM_SHA1_REV1" ] || die "Rev 1 ROM SHA-1 mismatch"
+  NATIVE_DIR="$BUILD_DIR/nrgen"
+  python3 "$HERE/../tools/nrecomp/gen_all.py" "$MPH_ROM_REV1" "$NATIVE_DIR" || die "native generation failed"
+  PERF_DIR=""
+fi
+
 DEKO_DIR="$BUILD_DIR/deko-shaders"
 say "  deko3d shaders"
 DKRUN="$DKRUN" "$HERE/tools/build_deko_shaders.sh" "$HERE/src/deko/shaders" "$DEKO_DIR" >/dev/null || die "deko3d shader build failed"
@@ -101,6 +115,7 @@ INC="$COMPAT;/opt/devkitpro/libnx/include;/opt/devkitpro/portlibs/switch/include
   -DMPHNX_PIE_LIBS=$PIE_LIBS \
   -DMPHNX_LEAN=$LEAN \
   -DMPHNX_PERF_BANK_DIR='$PERF_DIR' \
+  -DMPHNX_NATIVE_DIR='$NATIVE_DIR' \
   -DMPHNX_DEKO_SHADERS='$DEKO_DIR/nx_deko_shaders.c' \
   -DNDSRECOMP_ROOT='$NDSRECOMP_ROOT' \
   -DNDS_GENERATED_DIR='$GEN' \
@@ -126,5 +141,36 @@ for sym in SDL_CreateRenderer SDL_OpenAudioDevice SDL_GameControllerOpen SDL_Ren
            __wrap_pthread_create __libnx_exception_handler; do
   grep -q "$sym" "$BUILD_DIR/switch/nds_runner.syms" || die "symbol missing from ELF: $sym"
 done
+if [ "$NATIVE" = 1 ]; then
+  for sym in nr_resume_arm9 nr_install nr_tab_static nr_overlays N_02004800_a; do
+    grep -q "$sym" "$BUILD_DIR/switch/nds_runner.syms" || die "native program missing from ELF: $sym"
+  done
+  # The Rev 1 game.toml for the SD card (sha1 gates every Rev 0-only feature off).
+  cat > "$BUILD_DIR/switch/game.toml" <<TOML
+# MPH-nx native build: Metroid Prime Hunters USA Rev 1
+[game]
+name = "Metroid Prime Hunters"
+id = "AMHE"
+region = "USA"
+revision = 1
+sha1 = "$ROM_SHA1_REV1"
+
+[display]
+screen_layout = "separate"
+supersampling = 1
+internal_resolution = 1
+antialiasing = 8
+adaptive_widescreen = "none"
+adaptive_guest_culling = false
+
+[system]
+startup_mode = "automatic"
+
+[cartridge]
+save_type = "flash"
+save_size = 262144
+TOML
+  say "  native ARM9 program present; Rev 1 game.toml written"
+fi
 say "  renderer, audio, input, game banks, FreeBIOS and Switch layer all present"
 sha256sum "$NRO"
