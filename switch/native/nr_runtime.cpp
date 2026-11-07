@@ -17,6 +17,9 @@
 #include <cstdlib>
 #include <cstring>
 #include <vector>
+#include <atomic>
+#include <chrono>
+#include <thread>
 
 extern "C" {
 uint32_t nr_redirect = 0;
@@ -156,6 +159,8 @@ extern "C" void nr_io_wr8(uint32_t a, uint32_t v) { ++g_nr_stats[NR_STAT_IO]; no
 // ---------------------------------------------------------------------------
 // Coroutine: the native ARM9 runs on its own stack
 // ---------------------------------------------------------------------------
+static volatile uint32_t g_nr_last_pc = 0;
+static volatile uint32_t g_nr_last_swi = 0xFFu;
 static NrCoro g_sched_ctx, g_arm9_ctx;
 static std::vector<uint8_t> g_arm9_stack;
 static bool& g_arm9_started = g_arm9_started_flag;
@@ -173,6 +178,7 @@ static void nr_take_irq(uint32_t resume);
 extern "C" void nr_service(void) {
     ++g_nr_stats[NR_STAT_SERVICE];
     const uint32_t resume = g_cpu.R[15];
+    g_nr_last_pc = resume | ((g_cpu.cpsr & CPSR_T_BIT) ? 1u : 0u);
     if (runtime_should_yield_slow()) {
         // Slice over, CPU halted, DMA owns the bus, or terminal: back to the
         // scheduler. It resumes us at the next ARM9 slice.
@@ -393,6 +399,63 @@ static void swi_intr_wait(bool discard, uint32_t mask) {
     }
 }
 
+// Memory helpers for SWIs: page table first, the bus (with overlay
+// bookkeeping) otherwise.
+static inline uint16_t rd16h(uint32_t a) {
+    const uintptr_t b = nr_rd_tab[a >> 12];
+    if (b) { uint16_t v; memcpy(&v, (const void*)(b + (a & 0xFFEu)), 2); return v; }
+    return (uint16_t)bus_read_u16_slow(a & ~1u);
+}
+static inline void wr16h(uint32_t a, uint16_t v) {
+    const uintptr_t b = nr_wr_tab[a >> 12];
+    if (b) { memcpy((void*)(b + (a & 0xFFEu)), &v, 2); return; }
+    note_store(a); bus_write_u16_slow(a & ~1u, v);
+}
+static inline void wr32h(uint32_t a, uint32_t v) {
+    const uintptr_t b = nr_wr_tab[a >> 12];
+    if (b) { memcpy((void*)(b + (a & 0xFFCu)), &v, 4); return; }
+    note_store(a); bus_write_u32_slow(a & ~3u, v);
+}
+
+// CpuSet (GBATEK): r0 source, r1 destination, r2 bits 0-20 unit count,
+// bit 24 fill (fixed source), bit 26 32-bit units (else 16-bit).
+static void swi_cpu_set() {
+    uint32_t src = g_cpu.R[0], dst = g_cpu.R[1];
+    const uint32_t ctl = g_cpu.R[2];
+    uint32_t n = ctl & 0x1FFFFFu;
+    const bool fill = (ctl >> 24) & 1u;
+    g_runtime_cycles += 8u + n * 3u;   // about what the BIOS loop costs
+    if ((ctl >> 26) & 1u) {
+        src &= ~3u; dst &= ~3u;
+        const uint32_t v0 = rd32(src);
+        for (; n; --n, dst += 4u) {
+            wr32h(dst, fill ? v0 : rd32(src));
+            if (!fill) src += 4u;
+        }
+    } else {
+        src &= ~1u; dst &= ~1u;
+        const uint16_t v0 = rd16h(src);
+        for (; n; --n, dst += 2u) {
+            wr16h(dst, fill ? v0 : rd16h(src));
+            if (!fill) src += 2u;
+        }
+    }
+}
+
+// CpuFastSet: 32-bit units, count rounded up to a multiple of 8 words.
+static void swi_cpu_fast_set() {
+    uint32_t src = g_cpu.R[0] & ~3u, dst = g_cpu.R[1] & ~3u;
+    const uint32_t ctl = g_cpu.R[2];
+    uint32_t n = ((ctl & 0x1FFFFFu) + 7u) & ~7u;
+    const bool fill = (ctl >> 24) & 1u;
+    g_runtime_cycles += 8u + n;
+    const uint32_t v0 = rd32(src);
+    for (; n; --n, dst += 4u) {
+        wr32h(dst, fill ? v0 : rd32(src));
+        if (!fill) src += 4u;
+    }
+}
+
 static void swi_via_bios(uint32_t num) {
     ++g_nr_stats[NR_STAT_SWI_BIOS];
     const uint32_t ret = g_cpu.R[15];
@@ -400,9 +463,11 @@ static void swi_via_bios(uint32_t num) {
     runtime_msr_cpsr((old & ~0x1Fu) | 0x13u, 0x1);
     g_cpu.cpsr = (g_cpu.cpsr & ~CPSR_T_BIT) | CPSR_I_BIT;
     runtime_msr_spsr(old, 0xF);
-    g_cpu.R[14] = ret | ((old & CPSR_T_BIT) ? 1u : 0u);
+    // LR_svc is the plain return address: the hardware never sets bit 0 here.
+    // The BIOS reads the SWI number from the byte at [LR - 2] (both modes).
+    g_cpu.R[14] = ret;
     g_cpu.R[15] = nds_exception_base() + 0x08u;
-    (void)num;
+    g_nr_last_swi = num;
     // Step until the BIOS returns to the caller in its own mode.
     for (int guard = 0; guard < 50000000; ++guard) {
         if (g_cpu.R[15] == ret && (g_cpu.cpsr & 0x1Fu) == (old & 0x1Fu)) return;
@@ -436,6 +501,8 @@ extern "C" void nr_swi(uint32_t num) {
         while (bit) { if (v >= r + bit) { v -= r + bit; r = (r >> 1) + bit; } else r >>= 1; bit >>= 2; }
         g_cpu.R[0] = r;
         return; }
+    case 0x0B: ++g_nr_stats[NR_STAT_SWI_HLE]; g_nr_last_swi = num; swi_cpu_set(); return;      // CpuSet
+    case 0x0C: ++g_nr_stats[NR_STAT_SWI_HLE]; g_nr_last_swi = num; swi_cpu_fast_set(); return; // CpuFastSet
     case 0x0F: ++g_nr_stats[NR_STAT_SWI_HLE]; g_cpu.R[0] = 0; return;   // IsDebugger
     default:
         swi_via_bios(num);
@@ -449,9 +516,31 @@ extern "C" void nr_stats_snapshot(unsigned long long* out, unsigned n) {
 
 static void remap_hook() { if (g_arm9_started_flag) nr_remap(); }
 
+// Once a second: flush the log to the SD card and write one status line, so a
+// hang (or an app closed from the HOME menu) still leaves the full story.
+static void heartbeat_main() {
+    unsigned long long prev[16] = {};
+    for (unsigned sec = 1;; ++sec) {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        unsigned long long cur[16];
+        for (int i = 0; i < 16; ++i) cur[i] = g_nr_stats[i];
+        std::fprintf(stderr,
+            "[native] t=%us pc=%08X swi=%02X | per s: service %llu yield %llu irq %llu dyn %llu "
+            "dynmiss %llu interp %llu swi-hle %llu swi-bios %llu redirect %llu ovswitch %llu io %llu\n",
+            sec, g_nr_last_pc, g_nr_last_swi & 0xFFu,
+            cur[0] - prev[0], cur[1] - prev[1], cur[2] - prev[2], cur[3] - prev[3], cur[4] - prev[4],
+            cur[5] - prev[5], cur[6] - prev[6], cur[7] - prev[7], cur[8] - prev[8], cur[9] - prev[9],
+            cur[10] - prev[10]);
+        std::fflush(stderr);
+        std::fflush(stdout);
+        for (int i = 0; i < 16; ++i) prev[i] = cur[i];
+    }
+}
+
 // Installed by the Switch layer before the runner starts.
 extern "C" void nr_install(void) {
     g_nx_native_build = true;
     g_nx_arm9_native_hook = nr_resume_arm9;
     g_nx_remap_hook = remap_hook;
+    std::thread(heartbeat_main).detach();
 }

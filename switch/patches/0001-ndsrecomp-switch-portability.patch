@@ -1872,7 +1872,7 @@ index 45b561e..2915312 100644
 +#endif
  }
 diff --git a/runner/src/main.cpp b/runner/src/main.cpp
-index 4375eb7..cc1b76d 100644
+index 4375eb7..9738dfc 100644
 --- a/runner/src/main.cpp
 +++ b/runner/src/main.cpp
 @@ -6,6 +6,7 @@
@@ -1883,7 +1883,7 @@ index 4375eb7..cc1b76d 100644
  #include <algorithm>
  #include <cstdint>
  #include <cstdio>
-@@ -148,15 +149,78 @@ extern "C" const unsigned g_dispatch_fw_arm7_pictochat_room_a_len;
+@@ -148,14 +149,77 @@ extern "C" const unsigned g_dispatch_fw_arm7_pictochat_room_a_len;
  #endif
  #endif
  
@@ -1922,8 +1922,8 @@ index 4375eb7..cc1b76d 100644
      return std::vector<uint8_t>((std::istreambuf_iterator<char>(f)),
                                  std::istreambuf_iterator<char>());
 +#endif
- }
- 
++}
++
 +#if defined(__SWITCH__)
 +// The cartridge SHA-1 only depends on the file. Cache it beside the ROM,
 +// keyed by size and modification time, so later launches skip the hash.
@@ -1956,12 +1956,11 @@ index 4375eb7..cc1b76d 100644
 +        }
 +    }
 +    return sha;
-+}
+ }
 +#endif
-+
+ 
  bool verify(const std::vector<uint8_t>& data, const char* want,
              const char* label) {
-     if (data.empty()) { std::fprintf(stderr, "[load] %s: missing/empty\n", label); return false; }
 @@ -353,7 +417,9 @@ int main(int argc, char** argv) {
      // savestate load as never-happened during the 2026-08-31 Kanden A/B and
      // cost the session an hour of phantom debugging. Unbuffered is what the C
@@ -1984,7 +1983,21 @@ index 4375eb7..cc1b76d 100644
          std::fprintf(stderr, "[load] cartridge: %zu bytes, SHA-1 %s\n",
                       rom.size(), rom_sha1.c_str());
          if (!frontend_options.expected_rom_sha1.empty() &&
-@@ -2213,6 +2283,31 @@ int main(int argc, char** argv) {
+@@ -1976,8 +2046,12 @@ int main(int argc, char** argv) {
+                            cli_live_overlay_cache.c_str(),
+                            rom_sha1.c_str());
+     live_overlay_set_transfer_trace(cli_live_overlay_transfer_trace);
++    // MPH-nx: USA Rev 1 (AMHE version 1) gets the same controls with its
++    // own addresses (title_patches.cpp).
++    const bool mph_rev1 = rom_sha1 == "a8679d4f8dcb445cbe946a424241ef44901b0caf";
++    if (mph_rev1) nds_title_patches_set_mph_rev1();
+     mph_mouse_aim_policy =
+-        rom_sha1 == "90164d1ac127ee5f9815ea4ae7de798c7b5fc629" &&
++        (rom_sha1 == "90164d1ac127ee5f9815ea4ae7de798c7b5fc629" || mph_rev1) &&
+         frontend_options.relative_mouse_touch;
+     frontend_options.relative_mouse_direct_aim = mph_mouse_aim_policy;
+     frontend_options.mph_prime_controls =
+@@ -2213,6 +2287,31 @@ int main(int argc, char** argv) {
                                g_dispatch_fw_arm7_pictochat_room_a_len,
                                0x00000000u);
  #endif
@@ -2000,7 +2013,7 @@ index 4375eb7..cc1b76d 100644
 +            std::fprintf(stderr, "[dispatch] registered flat MPH ARM9 bank\n");
 +        }
 +#endif
-+#if defined(__SWITCH__)
++#if defined(__SWITCH__) || defined(MPHNX_NATIVE)
 +        // MPH-nx native build: the main program is native code generated for
 +        // USA Rev 1. Register only the title's ARM7 banks (the ARM7 binary is
 +        // byte-identical in Rev 0 and Rev 1); every ARM9 bank stays out.
@@ -2430,3 +2443,74 @@ index a52d8db..b9baa96 100644
  void scheduler_performance_window_counts(uint64_t* windows,uint64_t* fences) {
      *windows=performance_windows;*fences=performance_fences;
  }
+diff --git a/runner/src/title_patches.cpp b/runner/src/title_patches.cpp
+index 8e1f7b1..98b413e 100644
+--- a/runner/src/title_patches.cpp
++++ b/runner/src/title_patches.cpp
+@@ -24,17 +24,22 @@ constexpr double kFix12One = 4096.0;
+ // AMHE0's native touch-look routine consumes these signed, per-frame fields.
+ // Feeding deltas here while holding the stylus at center preserves the game
+ // path but removes the finite physical touchscreen edge.
+-constexpr uint32_t kMphUs10PlayerPosition = 0x020D9CB8u;
+-constexpr uint32_t kMphUs10ChosenHunter = 0x020CB51Cu;
+-constexpr uint32_t kMphUs10MorphState = 0x020DA818u;
+-constexpr uint32_t kMphUs10JumpFlag = 0x020DABD9u;
+-constexpr uint32_t kMphUs10WeaponChange = 0x020DABDBu;
+-constexpr uint32_t kMphUs10SelectedWeapon = 0x020DABE3u;
+-constexpr uint32_t kMphUs10SpecialWeaponSlot = 0x020DA86Eu;
+-constexpr uint32_t kMphUs10GameMode = 0x020E78FCu;
+-constexpr uint32_t kMphUs10MapOrUserActionPaused = 0x020FB458u;
+-constexpr uint32_t kMphUs10AimX = 0x020DE526u;
+-constexpr uint32_t kMphUs10AimY = 0x020DE52Eu;
++// MPH-nx: these hold the USA Rev 0 addresses and switch to USA Rev 1 through
++// nds_title_patches_set_mph_rev1(). The Rev 1 values were mapped by matching
++// the game code that references each address (MPH-nx tools/nrecomp/addrmap.py;
++// aim X/Y and morph state agree with melonPrimeDS's US 1.1 table). The player
++// struct size (0xF30) is the same in both revisions.
++uint32_t kMphUs10PlayerPosition = 0x020D9CB8u;
++uint32_t kMphUs10ChosenHunter = 0x020CB51Cu;
++uint32_t kMphUs10MorphState = 0x020DA818u;
++uint32_t kMphUs10JumpFlag = 0x020DABD9u;
++uint32_t kMphUs10WeaponChange = 0x020DABDBu;
++uint32_t kMphUs10SelectedWeapon = 0x020DABE3u;
++uint32_t kMphUs10SpecialWeaponSlot = 0x020DA86Eu;
++uint32_t kMphUs10GameMode = 0x020E78FCu;
++uint32_t kMphUs10MapOrUserActionPaused = 0x020FB458u;
++uint32_t kMphUs10AimX = 0x020DE526u;
++uint32_t kMphUs10AimY = 0x020DE52Eu;
+ constexpr uint32_t kMphUs10MorphStride = 0xF30u;
+ constexpr uint32_t kMphUs10AimStride = 0x48u;
+ constexpr uint32_t kMphUs10BoostingOffset = 0x46u;
+@@ -356,6 +361,20 @@ void nds_title_patches_projection_begin() {
+     if (g_mkds_adaptive) patch_mkds_object_clipper();
+ }
+ 
++void nds_title_patches_set_mph_rev1() {
++    kMphUs10PlayerPosition = 0x020DA538u;
++    kMphUs10ChosenHunter = 0x020CBDA4u;
++    kMphUs10MorphState = 0x020DB098u;
++    kMphUs10JumpFlag = 0x020DB459u;
++    kMphUs10WeaponChange = 0x020DB45Bu;
++    kMphUs10SelectedWeapon = 0x020DB463u;
++    kMphUs10SpecialWeaponSlot = 0x020DB0EEu;
++    kMphUs10GameMode = 0x020E83BCu;
++    kMphUs10MapOrUserActionPaused = 0x020FBF18u;
++    kMphUs10AimX = 0x020DEDA6u;
++    kMphUs10AimY = 0x020DEDAEu;
++}
++
+ void nds_title_patches_set_mph_mouse_aim(bool enabled) {
+     g_mph_mouse_aim = enabled;
+     if (!enabled) cancel_mph_jump_restore();
+diff --git a/runner/src/title_patches.h b/runner/src/title_patches.h
+index 333067f..284921a 100644
+--- a/runner/src/title_patches.h
++++ b/runner/src/title_patches.h
+@@ -22,6 +22,7 @@ void nds_title_patches_set_mkds_adaptive(bool enabled, uint16_t adaptive_width);
+ // camera-space object planes and before it transforms them into world space.
+ void nds_title_patches_projection_begin();
+ void nds_title_patches_set_mph_mouse_aim(bool enabled);
++void nds_title_patches_set_mph_rev1();  // MPH-nx: USA Rev 1 addresses
+ // MPH adventure mode: rebuild the guest's own frusta at the host's adaptive
+ // top width so per-room sub-frusta and entity sphere culling cover the whole
+ // band. `adaptive_width` must equal the host 3D render width.
