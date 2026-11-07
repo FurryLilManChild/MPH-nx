@@ -2,6 +2,15 @@
 
 Newest first.
 
+## 2026-11-07: switch-native1 results, cloud boot test, switch-native2
+
+- native1 white screen: Thumb SWIs went to the BIOS with LR bit 0 set (the BIOS reads the SWI number at [LR-2]), and the interpreter refused to run BIOS code (no write provenance).
+- New cloud boot test (switch/host): headless x86-64 build of the native engine; NR_DISABLE=1 runs the interpreter as a reference; card/DMA command trace, call trace and exit screenshot for comparison. It found and fixed: BIOS code under the interpreter, write provenance for native stores, mid-function entries and returns (redirect 2), IRQ epilogue at any dispatch point, DMA stall after I/O stores, overlay re-identification, and nr_call_dyn returning early when a native function returned into interpreted code.
+- Native SWIs: CpuSet, CpuFastSet, WaitByLoop, GetCRC16, BitUnPack, LZ77, Huffman, RL, Diff. Log heartbeat flushes every second.
+- Analysis roots come from the reference's real call targets (1,109); interpreted code dropped from about 2.5M to 0.6M instructions per second in the cloud test.
+- Result: 45 s emulated, native matches the reference (same card commands, same end PC); the hunter intro movie renders on both screens.
+- Prime controls aim and weapon switching on for Rev 1 (addresses mapped by tools/nrecomp/addrmap.py; aim and morph agree with melonPrimeDS US 1.1).
+
 ## 2026-11-06: switch-native1
 
 - First build on the native recompilation engine (docs/native-recomp-design.md), USA Rev 1 only. ARM9 static image plus 18 overlays compiled to C (about 9,900 functions); interpreter fallback logs every miss. ARM7 still on the old banks.
