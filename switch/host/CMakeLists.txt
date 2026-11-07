@@ -34,6 +34,8 @@ set_source_files_properties(
     "${NDSRECOMP_ROOT}/runner/src/scheduler.cpp"
     "${NDSRECOMP_ROOT}/runner/src/bus.cpp"
     "${NDSRECOMP_ROOT}/runner/src/runtime_arm.cpp"
+    "${NDSRECOMP_ROOT}/runner/src/io.cpp"
+    "${NDSRECOMP_ROOT}/runner/src/tier3.cpp"
     DIRECTORY "${NDSRECOMP_ROOT}/runner"
     PROPERTIES COMPILE_DEFINITIONS "MPHNX_HOST=1")
 
@@ -43,8 +45,10 @@ add_library(mphnx_native_game STATIC ${_native_units})
 target_include_directories(mphnx_native_game PRIVATE "${_nat}" "${MPHNX_NATIVE_DIR}"
     "${NDSRECOMP_ROOT}/external/arm-recomp-core/common")
 target_compile_options(mphnx_native_game PRIVATE -O1 -g0 -w -fno-strict-aliasing)
+# Host debug: function-entry log (NR_CALLTRACE_FROM decides when it prints).
+target_compile_definitions(mphnx_native_game PRIVATE NR_CALLTRACE=1)
 target_sources(nds_runner PRIVATE "${_nat}/nr_runtime.cpp" "${_nat}/nr_coro.c"
     "${_nat}/nr_coro_switch.S" "${CMAKE_CURRENT_SOURCE_DIR}/host_install.cpp")
 target_include_directories(nds_runner PRIVATE "${_nat}" "${MPHNX_NATIVE_DIR}")
-target_compile_definitions(nds_runner PRIVATE MPHNX_NATIVE=1)
+target_compile_definitions(nds_runner PRIVATE MPHNX_NATIVE=1 NR_CALLTRACE=1)
 target_link_libraries(nds_runner PRIVATE mphnx_native_game)

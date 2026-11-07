@@ -1602,7 +1602,7 @@ index 56dbb80..2640c44 100644
  
      if (info.cpu_brand.empty()) info.cpu_brand = "unknown";
 diff --git a/runner/src/io.cpp b/runner/src/io.cpp
-index 20544a0..a8f70a3 100644
+index 20544a0..f1b0473 100644
 --- a/runner/src/io.cpp
 +++ b/runner/src/io.cpp
 @@ -1,5 +1,6 @@
@@ -1834,7 +1834,7 @@ index 20544a0..a8f70a3 100644
                  if (g_card_transfer_pos < g_card_transfer_len) {
                      const uint32_t xfercycle =
                          (g_romctrl & 0x08000000u) ? 8u : 5u;
-@@ -3399,7 +3536,11 @@ uint32_t nds_io_read(uint32_t addr, uint32_t width) {
+@@ -3399,8 +3536,23 @@ uint32_t nds_io_read(uint32_t addr, uint32_t width) {
  }
  
  void nds_io_write(uint32_t addr, uint32_t value, uint32_t width) {
@@ -1844,8 +1844,20 @@ index 20544a0..a8f70a3 100644
      scheduler_performance_io_fence();
 +#endif
      const int cpu = active();
++#if defined(MPHNX_HOST)
++    // MPH-nx host boot test: NR_TRACE_IO=1 logs ARM9 card and DMA register writes.
++    {
++        static int on = -1;
++        if (on < 0) { const char* e = std::getenv("NR_TRACE_IO"); on = e && e[0] == '1'; }
++        if (on && cpu == 0 && ((addr >= 0x040001A0u && addr < 0x040001B0u) ||
++                               (addr >= 0x040000B0u && addr < 0x040000E0u)))
++            std::fprintf(stderr, "[io9] w%u %08X = %08X cyc %llu\n", width, addr, value,
++                         (unsigned long long)g_runtime_cycles);
++    }
++#endif
      if (card_register_address(addr) && !card_owned_by(cpu)) return;
      if (cpu == 0 && gpu2d_reg_addr(addr)) {
+         nds_gpu2d_write(addr, value, width);
 diff --git a/runner/src/io.h b/runner/src/io.h
 index 9886382..f4d0de9 100644
 --- a/runner/src/io.h
@@ -2452,6 +2464,29 @@ index a52d8db..59e4000 100644
  void scheduler_performance_window_counts(uint64_t* windows,uint64_t* fences) {
      *windows=performance_windows;*fences=performance_fences;
  }
+diff --git a/runner/src/tier3.cpp b/runner/src/tier3.cpp
+index ced6203..59e5c49 100644
+--- a/runner/src/tier3.cpp
++++ b/runner/src/tier3.cpp
+@@ -546,6 +546,18 @@ static void tier3_run_impl(uint32_t /*entry*/, bool single_step) {
+         // its push and eventually overflows the stack.
+         if (r == Interpreter::Result::Branched && in.is_call &&
+             in.op != armv4t::IrOp::BL_prefix) {
++#if defined(MPHNX_HOST)
++            // MPH-nx host boot test: same call log as the native engine's
++            // NR_CALLTRACE (ARM9, thread modes, after NR_CALLTRACE_FROM).
++            {
++                static long long from = -2;
++                if (from == -2) { const char* e = std::getenv("NR_CALLTRACE_FROM"); from = e ? std::atoll(e) : -1; }
++                const uint32_t mode = ic.cpsr.mode;
++                if (from >= 0 && g_nds_active == NDS_ARM9 && (long long)g_runtime_cycles >= from &&
++                    (mode == 0x1Fu || mode == 0x10u))
++                    std::fprintf(stderr, "[call] %08X\n", ic.R[15] | (ic.cpsr.t ? 1u : 0u));
++            }
++#endif
+             pending_entry = true;
+             pending_pc = ic.R[15];
+             pending_thumb = ic.cpsr.t;
 diff --git a/runner/src/title_patches.cpp b/runner/src/title_patches.cpp
 index 8e1f7b1..98b413e 100644
 --- a/runner/src/title_patches.cpp

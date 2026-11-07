@@ -565,6 +565,8 @@ class FuncGen:
                     cyc = 0
             self.w('L_%08X:' % a)
             self.w('    NR_TRACE(%s);' % h32(a))
+            if a == f.entry:
+                self.w('    NR_FENTRY(%s);' % h32(a | (1 if f.thumb else 0)))
             cost = 1
             if i.op in ('ldm', 'stm'):
                 cost += bin(i.f['regs']).count('1')

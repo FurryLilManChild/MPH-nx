@@ -135,6 +135,14 @@ extern char* nr_stack_limit;
 void nr_stack_overflow(void);
 #define NR_ENTER() do { if (__builtin_expect((char*)__builtin_frame_address(0) < nr_stack_limit, 0)) nr_stack_overflow(); } while (0)
 
+/* Host debug: NR_CALLTRACE builds log every native function entry
+   (nr_fentry decides whether to print). */
+#ifdef NR_CALLTRACE
+void nr_fentry(uint32_t pc);
+#define NR_FENTRY(pc) nr_fentry(pc)
+#else
+#define NR_FENTRY(pc) ((void)0)
+#endif
 #ifdef NR_TRACE_ON
 void nr_trace(uint32_t pc, const uint32_t* r, uint32_t flags);
 #define NR_TRACE(pc) do { uint32_t _tr[15] = {r0,r1,r2,r3,r4,r5,r6,r7,r8,r9,r10,r11,r12,r13,r14}; \

@@ -51,6 +51,7 @@ void tier3_step_one(uint32_t pc);
 uint32_t nds_irq_pending(int cpu);
 bool nds_cpu_halted(int cpu);
 void nds_cpu_enter_halt(int cpu);
+bool nds_dma_cpu_stalled(int cpu);
 
 enum { NR_STAT_SERVICE, NR_STAT_YIELD, NR_STAT_IRQ, NR_STAT_DYN, NR_STAT_DYN_MISS,
        NR_STAT_INTERP, NR_STAT_SWI_HLE, NR_STAT_SWI_BIOS, NR_STAT_REDIRECT, NR_STAT_OVSWITCH,
@@ -107,11 +108,16 @@ static NrFn nr_lookup(uint32_t key) {
     const uint32_t a = key & ~1u;
     if (a >= g_ov_lo && a < g_ov_hi) {
         if (g_ov_dirty || g_ov_epoch != g_coverage_write_epoch) ov_identify();
-        for (uint32_t i = 0; i < nr_overlay_count; ++i) {
-            const NrOverlay& o = nr_overlays[i];
-            if (g_ov_resident[i] == 1 && a >= o.ram && a < o.ram + o.size) {
-                if (const NrEntry* e = find(o.tab, o.count, key)) return e->fn;
+        for (int pass = 0; pass < 2; ++pass) {
+            for (uint32_t i = 0; i < nr_overlay_count; ++i) {
+                const NrOverlay& o = nr_overlays[i];
+                if (g_ov_resident[i] == 1 && a >= o.ram && a < o.ram + o.size) {
+                    if (const NrEntry* e = find(o.tab, o.count, key)) return e->fn;
+                }
             }
+            // Not found: an overlay may have been loaded by a path that does
+            // not mark it (DMA, a store through a fast page). Look again.
+            if (pass == 0) ov_identify();
         }
         return nullptr;
     }
@@ -154,9 +160,17 @@ extern "C" uint32_t nr_io_rd32(uint32_t a) { ++g_nr_stats[NR_STAT_IO]; return bu
 extern "C" uint32_t nr_io_rd16(uint32_t a) { ++g_nr_stats[NR_STAT_IO]; return bus_read_u16_slow(a); }
 extern "C" uint32_t nr_io_rd8(uint32_t a) { ++g_nr_stats[NR_STAT_IO]; return bus_read_u8_slow(a); }
 static inline void note_store(uint32_t a) { if (a >= g_ov_lo && a < g_ov_hi) g_ov_dirty = 1; }
-extern "C" void nr_io_wr32(uint32_t a, uint32_t v) { ++g_nr_stats[NR_STAT_IO]; note_store(a); bus_write_u32_slow(a, v); }
-extern "C" void nr_io_wr16(uint32_t a, uint32_t v) { ++g_nr_stats[NR_STAT_IO]; note_store(a); bus_write_u16_slow(a, (uint16_t)v); }
-extern "C" void nr_io_wr8(uint32_t a, uint32_t v) { ++g_nr_stats[NR_STAT_IO]; note_store(a); bus_write_u8_slow(a, (uint8_t)v); }
+// A store that starts an immediate DMA stalls the CPU until the DMA is done
+// (the hardware gives the bus to the DMA). Hand the slice back right here so
+// the next instruction sees the copied data. Only memory changes meanwhile, so
+// the generated code's register locals stay valid.
+static void nr_yield();
+static void io_stall_check() {
+    while (nds_dma_cpu_stalled(0)) { nr_yield(); g_nds_unwinding = 0; }
+}
+extern "C" void nr_io_wr32(uint32_t a, uint32_t v) { ++g_nr_stats[NR_STAT_IO]; note_store(a); bus_write_u32_slow(a, v); io_stall_check(); }
+extern "C" void nr_io_wr16(uint32_t a, uint32_t v) { ++g_nr_stats[NR_STAT_IO]; note_store(a); bus_write_u16_slow(a, (uint16_t)v); io_stall_check(); }
+extern "C" void nr_io_wr8(uint32_t a, uint32_t v) { ++g_nr_stats[NR_STAT_IO]; note_store(a); bus_write_u8_slow(a, (uint8_t)v); io_stall_check(); }
 
 // ---------------------------------------------------------------------------
 // Coroutine: the native ARM9 runs on its own stack
@@ -174,11 +188,22 @@ static void nr_yield() {
 }
 
 static void nr_take_irq(uint32_t resume);
+static void nr_irq_exit();
+extern const uint32_t NR_IRQ_RET;
 
 // Service point: the native code reached its fast limit (slice end, device
 // deadline, or a state change asking for a re-poll). R15 holds the resume PC.
 extern "C" void nr_service(void) {
     ++g_nr_stats[NR_STAT_SERVICE];
+    {   // host experiment: NR_SLOW=pct adds pct% to native time between services
+        static int slow = -1; static unsigned long long last = 0;
+        if (slow < 0) { const char* e = std::getenv("NR_SLOW"); slow = e ? std::atoi(e) : 0; }
+        if (slow > 0) {
+            if (g_runtime_cycles > last && g_runtime_cycles - last < 100000)
+                g_runtime_cycles += (g_runtime_cycles - last) * (unsigned)slow / 100u;
+            last = g_runtime_cycles;
+        }
+    }
     const uint32_t resume = g_cpu.R[15];
     g_nr_last_pc = resume | ((g_cpu.cpsr & CPSR_T_BIT) ? 1u : 0u);
     if (runtime_should_yield_slow()) {
@@ -224,9 +249,26 @@ static void note_miss(uint32_t key) {
     for (uint32_t i = 0; i < n; ++i) if (seen[i] == key) return;
     if (n < 512) seen[n++] = key;
     if (n <= 300) std::fprintf(stderr, "[native] no native code at %08X%s\n", key & ~1u, (key & 1) ? " (thumb)" : "");
+    const uint32_t a = key & ~1u;
+    if (n <= 300 && a >= g_ov_lo && a < g_ov_hi) {
+        for (uint32_t i = 0; i < nr_overlay_count; ++i) {
+            const NrOverlay& o = nr_overlays[i];
+            if (a < o.ram || a >= o.ram + o.size) continue;
+            uint32_t v = 0, e = 0;
+            if (const uintptr_t b = nr_rd_tab[o.ram >> 12]) memcpy(&v, (const void*)(b + (o.ram & 0xFFFu)), 4);
+            memcpy(&e, o.head, 4);
+            std::fprintf(stderr, "[native]   overlay %u: resident %d present %d first word %08X (expect %08X) lr %08X sp %08X\n",
+                         o.id, g_ov_resident[i], (int)ov_present(o), v, e, g_cpu.R[14], g_cpu.R[13]);
+        }
+    }
 }
 
 static int g_nr_trace_interp = -1;   // host debug: NR_TRACE_INTERP=N logs N steps
+static int g_nr_trace_sw = -1;       // host debug: NR_TRACE_SWITCH=1 logs context changes
+static bool trace_sw() {
+    if (g_nr_trace_sw < 0) { const char* e = std::getenv("NR_TRACE_SWITCH"); g_nr_trace_sw = e && e[0] == '1'; }
+    return g_nr_trace_sw > 0;
+}
 static void interp_step_inner();
 // The interpreter only runs code with write provenance unless static-miss
 // discovery is on; the BIOS ROM has none, but the IRQ return path and BIOS
@@ -271,6 +313,7 @@ static void nr_run(uint32_t key) {
     g_cpu.R[15] = key & ~1u;
     for (;;) {
         nr_redirect = 0;
+        if (g_cpu.R[15] == NR_IRQ_RET) { nr_irq_exit(); continue; }
         const uint32_t k = cur_key();
         if (NrFn fn = nr_lookup(k)) {
             fn(k & ~1u);
@@ -293,6 +336,7 @@ extern "C" void nr_call_dyn(uint32_t target) {
     // redirect 1 is a real redirect (thread switch, unexpected return): unwind.
     bool first = true;
     for (;;) {
+        if (g_cpu.R[15] == NR_IRQ_RET && ret != NR_IRQ_RET) { nr_irq_exit(); nr_redirect = 0; continue; }
         const uint32_t k = cur_key();
         if (NrFn fn = nr_lookup(k)) {
             fn(k & ~1u);
@@ -331,6 +375,27 @@ static inline void wr32(uint32_t a, uint32_t v) {
 // IRQ entry as the hardware plus the BIOS IRQ vector do it, then the game's
 // handler from [DTCM end - 4] as a native call. A handler that switches thread
 // leaves a different return PC: that becomes a redirect.
+// The handler returns here (the BIOS IRQ epilogue). Any dispatch point that
+// sees this address runs the epilogue, so a handler that was unwound to the
+// top loop (thread switch, redirect) still returns correctly.
+extern const uint32_t NR_IRQ_RET = 0xFFFF0FF0u;
+
+// BIOS: LDMFD sp!, {r0-r3, r12, lr}; SUBS pc, lr, #4
+static void nr_irq_exit() {
+    uint32_t sp = g_cpu.R[13];
+    g_cpu.R[0] = rd32(sp); g_cpu.R[1] = rd32(sp + 4); g_cpu.R[2] = rd32(sp + 8);
+    g_cpu.R[3] = rd32(sp + 12); g_cpu.R[12] = rd32(sp + 16); g_cpu.R[14] = rd32(sp + 20);
+    g_cpu.R[13] = sp + 24u;
+    const uint32_t lr = g_cpu.R[14];
+    const uint32_t spsr = runtime_mrs_spsr();
+    runtime_msr_cpsr(spsr, 0xF);
+    g_cpu.cpsr = spsr;
+    g_cpu.R[15] = (lr - 4u) & ~1u;
+}
+
+// IRQ entry as the hardware plus the BIOS IRQ vector do it, then the game's
+// handler from [DTCM end - 4] as a native call. A handler that switches thread
+// leaves a different return PC: that becomes a redirect.
 static void nr_take_irq(uint32_t resume) {
     ++g_nr_stats[NR_STAT_IRQ];
     const uint32_t old = g_cpu.cpsr;
@@ -346,28 +411,22 @@ static void nr_take_irq(uint32_t resume) {
     g_cpu.R[13] = sp;
     g_cpu.R[0] = dtcm_end();
     const uint32_t handler = rd32(g_cpu.R[0] - 4u);
-    const uint32_t bios_ret = 0xFFFF0000u + 0x0128u;   // a BIOS address the handler returns to
-    g_cpu.R[14] = bios_ret;
+    g_cpu.R[14] = NR_IRQ_RET;
     const uint32_t keep_redirect = nr_redirect;
     nr_redirect = 0;
     nr_call_dyn(handler);
-    if (nr_redirect && g_cpu.R[15] != bios_ret) {
-        // The handler did not come back through the BIOS: leave it to the top loop.
+    if (g_cpu.R[15] != NR_IRQ_RET) {
+        // Unwound before the handler finished: the top loop finishes it and
+        // runs the epilogue when it reaches NR_IRQ_RET.
+        if (!nr_redirect) nr_redirect = 1;
         return;
     }
     nr_redirect = keep_redirect;
-    // BIOS: LDMFD sp!, {r0-r3, r12, lr}; SUBS pc, lr, #4
-    sp = g_cpu.R[13];
-    g_cpu.R[0] = rd32(sp); g_cpu.R[1] = rd32(sp + 4); g_cpu.R[2] = rd32(sp + 8);
-    g_cpu.R[3] = rd32(sp + 12); g_cpu.R[12] = rd32(sp + 16); g_cpu.R[14] = rd32(sp + 20);
-    g_cpu.R[13] = sp + 24u;
-    const uint32_t lr = g_cpu.R[14];
-    const uint32_t spsr = runtime_mrs_spsr();
-    runtime_msr_cpsr(spsr, 0xF);
-    g_cpu.cpsr = spsr;
-    const uint32_t back = lr - 4u;
-    g_cpu.R[15] = back;
-    if (back != resume || ((spsr & CPSR_T_BIT) ? 1u : 0u) != ret_thumb) nr_redirect = 1;
+    nr_irq_exit();
+    if (trace_sw()) std::fprintf(stderr, "[sw] irq at %08X handler %08X -> %08X cpsr %08X IF? cyc %llu\n",
+                                 resume, handler, g_cpu.R[15], g_cpu.cpsr, (unsigned long long)g_runtime_cycles);
+    const uint32_t spsr = g_cpu.cpsr;
+    if (g_cpu.R[15] != resume || ((spsr & CPSR_T_BIT) ? 1u : 0u) != ret_thumb) nr_redirect = 1;
 }
 
 extern "C" void nr_msr_cpsr(uint32_t v, uint32_t mask) {
@@ -380,6 +439,8 @@ extern "C" void nr_set_spsr(uint32_t v, uint32_t mask) { runtime_msr_spsr(v, mas
 
 extern "C" void nr_exception_return(uint32_t pc) {
     const uint32_t spsr = runtime_mrs_spsr();
+    if (trace_sw()) std::fprintf(stderr, "[sw] eret from %08X -> %08X cpsr %08X cyc %llu\n",
+                                 g_cpu.R[15], pc, spsr, (unsigned long long)g_runtime_cycles);
     runtime_msr_cpsr(spsr, 0xF);
     g_cpu.cpsr = spsr;
     g_cpu.R[15] = pc & ~1u;
@@ -387,6 +448,7 @@ extern "C" void nr_exception_return(uint32_t pc) {
 }
 
 extern "C" void nr_fallback(void) {
+    if (trace_sw()) std::fprintf(stderr, "[sw] fallback at %08X cpsr %08X\n", g_cpu.R[15], g_cpu.cpsr);
     // One instruction on the interpreter, then back to the top loop.
     interp_step();
     nr_redirect = 1;
@@ -754,3 +816,16 @@ extern "C" void nr_install(void) {
     g_nx_remap_hook = remap_hook;
     std::thread(heartbeat_main).detach();
 }
+
+#ifdef NR_CALLTRACE
+// Host debug: NR_CALLTRACE_FROM=cycles prints function entries (thread modes
+// only) once the ARM9 clock passes that point.
+extern "C" void nr_fentry(uint32_t pc) {
+    static long long from = -2;
+    if (from == -2) { const char* e = std::getenv("NR_CALLTRACE_FROM"); from = e ? std::atoll(e) : -1; }
+    if (from < 0 || (long long)g_runtime_cycles < from) return;
+    const uint32_t mode = g_cpu.cpsr & 0x1Fu;
+    if (mode != 0x1Fu && mode != 0x10u) return;
+    std::fprintf(stderr, "[call] %08X\n", pc);
+}
+#endif
