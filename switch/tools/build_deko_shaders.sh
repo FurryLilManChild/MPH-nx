@@ -42,11 +42,25 @@ SortWork SortWork
 '
 names=()
 cmds=""
-while read -r name defs; do
-  [ -n "$name" ] || continue
-  python3 - "$SRC/GPU3D_Comp.glsl" "$OUT/glsl/$name.glsl" "$defs" <<'PY'
+# MPH-nx resolution scaler: one set per render size. Suffix, then the size
+# defines (the 1x set keeps the shader's built-in 256x192).
+SETS='
+_ 
+_S15 ScreenWidth=384;ScreenHeight=288;WorkTileMul=16
+_S2 ScreenWidth=512;ScreenHeight=384;WorkTileMul=16
+'
+while read -r sfx sizes; do
+  [ -n "$sfx" ] || continue
+  [ "$sfx" = "_" ] && sfx=""
+  extra="$VARIANTS"
+  [ -n "$sfx" ] && extra="$VARIANTS
+Downsample Downsample"
+  while read -r base defs; do
+    [ -n "$base" ] || continue
+    name="$base$sfx"
+    python3 - "$SRC/GPU3D_Comp.glsl" "$OUT/glsl/$name.glsl" "$defs" "$sizes" <<'PY'
 import sys, re
-src, dst, defs = sys.argv[1], sys.argv[2], set(sys.argv[3].split(';'))
+src, dst, defs, sizes = sys.argv[1], sys.argv[2], set(sys.argv[3].split(';')), sys.argv[4]
 out = []
 for line in open(src):
     m = re.match(r'\s*#cmakedefine\s+(\w+)', line)
@@ -54,11 +68,20 @@ for line in open(src):
         out.append(('#define %s\n' % m.group(1)) if m.group(1) in defs else ('/* #undef %s */\n' % m.group(1)))
     else:
         out.append(line)
+    if line.startswith('#version') and sizes:
+        for kv in sizes.split(';'):
+            k, v = kv.split('=')
+            out.append('#define %s %s\n' % (k, v))
 open(dst, 'w').write(''.join(out))
 PY
-  names+=("$name")
-  cmds+="uam --stage=comp --out '$OUT/dksh/$name.dksh' '$OUT/glsl/$name.glsl' || exit 1; "
-done <<< "$VARIANTS"
+    names+=("$name")
+    cmds+="uam --stage=comp --out '$OUT/dksh/$name.dksh' '$OUT/glsl/$name.glsl' || exit 1; "
+  done <<< "$extra"
+done <<< "$SETS"
+# presenter: top-screen composite at render size
+cp "$SRC/HdCompose.glsl" "$OUT/glsl/HdCompose.glsl"
+names+=("HdCompose")
+cmds+="uam --stage=comp --out '$OUT/dksh/HdCompose.dksh' '$OUT/glsl/HdCompose.glsl' || exit 1; "
 "$DK" "$cmds"
 python3 - "$OUT" "${names[@]}" <<'PY'
 import sys, os

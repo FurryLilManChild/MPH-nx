@@ -38,7 +38,9 @@ class FuncGen:
         self.labels = set(f.blocks) | set(entries)
         # every instruction after a call is a resume point
         for a, i in f.insns.items():
-            if i and i.call:
+            if i and (i.call or i.op in ('swi', 'mcr', 'msr')):
+                # also after SWI, CP15 writes (halt) and MSR: each can hand
+                # control back to the runtime, which resumes at the next PC
                 self.labels.add(a + i.size)
         self.labels = {a for a in self.labels if a in f.insns}
 

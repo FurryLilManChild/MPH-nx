@@ -2,6 +2,14 @@
 
 Newest first.
 
+## 2026-11-07: switch-native4 results, switch-native5
+
+- native4: best run yet; 60 fps most of the time, dips into the 40s and 50s, two drops to about 19 fps during loads. Profile of the emulation thread: game code about 2%, idle about 13%, video work about 11%, interpreter fallback about 7% (half of it coverage bookkeeping), ARM7 on the old engine about 8%, native lookup about 5%, scheduler and I/O about 13%.
+- Load drops: Rev 1's card loop polls ROMCTRL bit 23 after every word; each poll cost a scheduler round (about 500k a second). native5 completes the pending card event on the poll when ARM9 PIO fast loading applies, and card registers take no fence there. (The ROM was already read into memory at boot.)
+- native5: roots from the native4 miss log (tools/nrecomp/missroots.py walks mid-function misses back to the prologue, per overlay with ov=NN); resume labels after SWI, MCR and MSR; lean interpreter (no coverage or live-compiler bookkeeping, no ARM9 bank probe); direct native entry tables; 2D workers woken every 8 lines; 3D readback in CPU-cached memory with a per-frame cache invalidate; presenter on its own thread.
+- Resolution scaler (port menu Display > Resolution: 1x, 1.5x, 2x): the deko3d 3D renderer renders at 384x288 or 512x384 from the sub-pixel vertex positions (one shader set per size) and downsamples for the 2D compositor; the presenter composes the top screen on the GPU (HdCompose.glsl) from the 2D engine's per-pixel top-two layers (upstream's HD frame) and the render-size 3D image. Scenes the 2D engine cannot describe stay at 1x.
+- Cloud boot test: same first 6,802 card commands as the reference, then further (faster loads); reaches the Sylux intro; interpreted instructions about 15k a second (native4: 188k).
+
 ## 2026-11-07: switch-native2 and native3 results, switch-native3, switch-native4
 
 - native2: boots on Accurate; Fastest crashed during boot (the ARM7 ran wild). Controls felt great (Mark). Speed a bit below test13; about 51% of emulation time went to a call-stack list from the old engine that the interpreter fallback filled and native code never emptied.

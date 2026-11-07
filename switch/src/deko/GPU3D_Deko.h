@@ -37,22 +37,40 @@ public:
     //dk::Fence FrameReady = {};
     //dk::Fence FrameReserveFence = {};
 private:
-    dk::Shader ShaderInterpXSpans[2];
-    dk::Shader ShaderBinCombined;
-    dk::Shader ShaderDepthBlend[2];
-    dk::Shader ShaderRasteriseNoTexture[2];
-    dk::Shader ShaderRasteriseNoTextureToon[2];
-    dk::Shader ShaderRasteriseNoTextureHighlight[2];
-    dk::Shader ShaderRasteriseUseTextureDecal[2];
-    dk::Shader ShaderRasteriseUseTextureModulate[2];
-    dk::Shader ShaderRasteriseUseTextureToon[2];
-    dk::Shader ShaderRasteriseUseTextureHighlight[2];
-    dk::Shader ShaderRasteriseShadowMask[2];
-    dk::Shader ShaderClearCoarseBinMask;
-    dk::Shader ShaderClearIndirectWorkCount;
-    dk::Shader ShaderCalculateWorkListOffset;
-    dk::Shader ShaderSortWork;
-    dk::Shader ShaderFinalPass[8];
+    // MPH-nx resolution scaler: one shader set per render size
+    // (0: 256x192, 1: 384x288 (1.5x), 2: 512x384 (2x)).
+    struct ShaderSet
+    {
+        dk::Shader ShaderInterpXSpans[2];
+        dk::Shader ShaderBinCombined;
+        dk::Shader ShaderDepthBlend[2];
+        dk::Shader ShaderRasteriseNoTexture[2];
+        dk::Shader ShaderRasteriseNoTextureToon[2];
+        dk::Shader ShaderRasteriseNoTextureHighlight[2];
+        dk::Shader ShaderRasteriseUseTextureDecal[2];
+        dk::Shader ShaderRasteriseUseTextureModulate[2];
+        dk::Shader ShaderRasteriseUseTextureToon[2];
+        dk::Shader ShaderRasteriseUseTextureHighlight[2];
+        dk::Shader ShaderRasteriseShadowMask[2];
+        dk::Shader ShaderClearCoarseBinMask;
+        dk::Shader ShaderClearIndirectWorkCount;
+        dk::Shader ShaderCalculateWorkListOffset;
+        dk::Shader ShaderSortWork;
+        dk::Shader ShaderFinalPass[8];
+        dk::Shader ShaderDownsample;
+    };
+    ShaderSet Sets[3];
+    ShaderSet* S = &Sets[0];
+public:
+    // Requested scale index; applied at the next frame (0, 1 or 2).
+    int RequestedScale = 0;
+    int CurScale = 0;
+    int ScrW = 256, ScrH = 192;
+    // GPU address and size of the full-size output for the presenter
+    // (packed RGB6A5, ScrW x ScrH) of the slot GetLine shows this frame.
+    bool HiresOutput(uint64_t* gpuAddr, int* w, int* h);
+private:
+    s32 Pos[10][2] = {};       // the current polygon's vertices at render size
 
     CmdMemRing<2> CmdMem;
     GpuMemHeap::Allocation YSpanIndicesTextureMemory;
@@ -68,6 +86,8 @@ private:
     // CPU-visible buffer (double buffered), read back through GetLine for
     // the software 2D compositor.
     GpuMemHeap::Allocation FinalOutputMemory[2];
+    GpuMemHeap::Allocation HiresOutputMemory[2];   // render size, for the presenter
+    int SlotScale[2] = {0, 0};
     dk::Fence FinalOutputFence[2] = {};
     int OutputSlot = -1;      // slot holding the latest submitted frame
     int PrevSlot = -1;        // the frame before it (finished by now)
@@ -186,13 +206,16 @@ private:
     static const int CoarseTileW = CoarseTileCountX * TileSize;
     static const int CoarseTileH = CoarseTileCountY * TileSize;
 
-    static const int TilesPerLine = 256/TileSize;
-    static const int TileLines = 192/TileSize;
+    // Buffer sizes cover the largest render size (512x384); the shaders of
+    // each set use the prefix of every array that their size needs.
+    static const int TilesPerLine = 512/TileSize;
+    static const int TileLines = 384/TileSize;
+    int CurTilesPerLine = 256/TileSize, CurTileLines = 192/TileSize;
 
     static const int BinStride = 2048/32;
     static const int CoarseBinStride = BinStride/32;
 
-    static const int MaxWorkTiles = TilesPerLine*TileLines*48;
+    static const int MaxWorkTiles = (256/TileSize)*(192/TileSize)*64;
     static const int MaxVariants = 256;
 
     struct BinResult
@@ -218,14 +241,14 @@ private:
 
     struct FinalTiles
     {
-        u32 ColorResult[256*192*2];
-        u32 DepthResult[256*192*2];
-        u32 AttrResult[256*192*2];
+        u32 ColorResult[512*384*2];
+        u32 DepthResult[512*384*2];
+        u32 AttrResult[512*384*2];
     };
 
     // eh those are pretty bad guesses
     // though real hw shouldn't be eable to render all 2048 polygons on every line either
-    static const int MaxYSpanIndices = 64*2048;
+    static const int MaxYSpanIndices = 64*2048*2;
     static const int MaxYSpanSetups = 6144*2;
     SetupIndices YSpanIndices[MaxYSpanIndices];
     SpanSetupY YSpanSetups[MaxYSpanSetups];
@@ -270,6 +293,7 @@ private:
 
     void SetupAttrs(SpanSetupY* span, Polygon* poly, int from, int to);
     void SetupYSpan(int polynum, SpanSetupY* span, Polygon* poly, int from, int to, u32 y, int side);
+    void ApplyScale();
     void SetupYSpanDummy(SpanSetupY* span, Polygon* poly, int vertex, int side);
 };
 

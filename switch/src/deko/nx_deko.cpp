@@ -26,6 +26,7 @@ dk::CmdBuf EmuCmdBuf;
 std::optional<GpuMemHeap> TextureHeap;
 std::optional<GpuMemHeap> ShaderCodeHeap;
 std::optional<GpuMemHeap> DataHeap;
+std::optional<GpuMemHeap> ReadbackHeap;
 
 namespace
 {
@@ -49,9 +50,13 @@ bool Init()
         .setFlushThreshold(DK_QUEUE_MIN_CMDMEM_SIZE)
         .create();
     TextureHeap.emplace(Device, 1024 * 1024 * 128, DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image, 1024 * 8);
-    ShaderCodeHeap.emplace(Device, 1024 * 1024 * 4,
+    ShaderCodeHeap.emplace(Device, 1024 * 1024 * 16,
         DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached | DkMemBlockFlags_Code, 64);
-    DataHeap.emplace(Device, 1024 * 1024 * 160, DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached, 256);
+    DataHeap.emplace(Device, 1024 * 1024 * 224, DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached, 256);
+    // CPU-cached: the 2D compositor reads the 3D output line by line, and
+    // uncached reads cost about 2% of the emulation thread (native4 profile).
+    // GetLine invalidates the CPU cache for a slot once the GPU is done.
+    ReadbackHeap.emplace(Device, 1024 * 1024 * 4, DkMemBlockFlags_CpuCached | DkMemBlockFlags_GpuCached, 64);
     EmuCmdBuf = dk::CmdBufMaker{Device}.create();
     g_ready = true;
     std::fprintf(stderr, "[deko3d] device ready (%u embedded shaders)\n", g_nx_deko_shader_count);

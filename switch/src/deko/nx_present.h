@@ -19,6 +19,15 @@ struct NxPresentFrame
     const char* hud_text;     // top-left text, nullptr or "" for none
     const char* notice;       // bottom-screen notice, nullptr for none
     const char* (*glyph)(char); // 5x7 font: 35 chars of '0'/'1'
+    // Resolution scaler (top screen only). When hd is set, the top screen is
+    // composed on the GPU at render size from the 2D layers below and the
+    // render-size 3D image; `top` stays the fallback.
+    bool hd;
+    const uint32_t* hd_top;     // 256 x 192 RG32 pairs (NdsGpu2dHdFrame)
+    const uint32_t* hd_below;
+    uint32_t bldcnt, eva, evb, evy, master_bright, priority_3d, order_3d, render_xpos;
+    uint64_t hi_addr;           // GPU address of the render-size 3D image
+    int hi_w, hi_h;
 };
 
 struct NxPresentTicks { uint64_t upload, draw, swap; };
@@ -27,4 +36,6 @@ struct NxPresentTicks { uint64_t upload, draw, swap; };
 // and a 1280x720 swapchain on the default window. False: keep SDL.
 bool nx_present_init();
 bool nx_present_active();
+// Copies the frame and hands it to the presenter thread (which waits for
+// the display); the emulation thread does not wait for vsync.
 void nx_present_frame(const NxPresentFrame& frame, NxPresentTicks* ticks);

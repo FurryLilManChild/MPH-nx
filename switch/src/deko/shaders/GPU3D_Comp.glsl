@@ -1,5 +1,11 @@
 #version 460
 
+// MPH-nx: render size (the build defines ScreenWidth/ScreenHeight per scale set)
+#ifndef ScreenWidth
+#define ScreenWidth 256
+#define ScreenHeight 192
+#endif
+
 #cmakedefine InterpSpans
 #cmakedefine BinCombined
 #cmakedefine Rasterise
@@ -9,6 +15,7 @@
 #cmakedefine CalculateWorkOffsets
 #cmakedefine SortWork
 #cmakedefine FinalPass
+#cmakedefine Downsample
 
 #cmakedefine AntiAliasing
 #cmakedefine EdgeMarking
@@ -125,14 +132,17 @@ const int CoarseTileCountY = 4;
 const int CoarseTileW = CoarseTileCountX * TileSize;
 const int CoarseTileH = CoarseTileCountY * TileSize;
 
-const int FramebufferStride = 256*192;
-const int TilesPerLine = 256/TileSize;
-const int TileLines = 192/TileSize;
+const int FramebufferStride = ScreenWidth*ScreenHeight;
+const int TilesPerLine = ScreenWidth/TileSize;
+const int TileLines = ScreenHeight/TileSize;
 
 const int BinStride = 2048/32;
 const int CoarseBinStride = BinStride/32;
 
-const int MaxWorkTiles = TilesPerLine*TileLines*48;
+#ifndef WorkTileMul
+#define WorkTileMul 48
+#endif
+const int MaxWorkTiles = TilesPerLine*TileLines*WorkTileMul;
 const int MaxVariants = 256;
 
 layout (std430, binding = 3)
@@ -175,9 +185,9 @@ readonly
 #endif
 buffer RasterResult
 {
-    uint ColorResult[256*192*2];
-    uint DepthResult[256*192*2];
-    uint AttrResult[256*192*2];
+    uint ColorResult[ScreenWidth*ScreenHeight*2];
+    uint DepthResult[ScreenWidth*ScreenHeight*2];
+    uint AttrResult[ScreenWidth*ScreenHeight*2];
 };
 
 layout (std140, binding = 0) uniform MetaUniform
@@ -1271,7 +1281,7 @@ void main()
     ProcessCoarseMask(linearTile, coarseMaskLo, 0, color, depth, attr, stencil, prevIsShadowMask);
     ProcessCoarseMask(linearTile, coarseMaskHi, BinStride/2, color, depth, attr, stencil, prevIsShadowMask);
 
-    int resultOffset = int(gl_GlobalInvocationID.x) + int(gl_GlobalInvocationID.y) * 256;
+    int resultOffset = int(gl_GlobalInvocationID.x) + int(gl_GlobalInvocationID.y) * ScreenWidth;
     ColorResult[resultOffset] = color.x;
     ColorResult[resultOffset+FramebufferStride] = color.y;
     DepthResult[resultOffset] = depth.x;
@@ -1338,13 +1348,13 @@ uint BlendFog(uint color, uint depth)
 
 void main()
 {
-    int srcX = (int(gl_GlobalInvocationID.x) + XScroll) & 0x1FF;
-    int resultOffset = int(srcX) + int(gl_GlobalInvocationID.y) * 256;
+    int srcX = (int(gl_GlobalInvocationID.x) + XScroll) % (2*ScreenWidth);
+    int resultOffset = int(srcX) + int(gl_GlobalInvocationID.y) * ScreenWidth;
 
     uvec2 color = uvec2(0);
     uvec2 depth = uvec2(0);
     uvec2 attr = uvec2(0);
-    if (srcX < 256)
+    if (srcX < ScreenWidth)
     {
         color = uvec2(ColorResult[resultOffset], ColorResult[resultOffset+FramebufferStride]);
         depth = uvec2(DepthResult[resultOffset], DepthResult[resultOffset+FramebufferStride]);
@@ -1362,20 +1372,20 @@ void main()
             otherAttr.x = AttrResult[resultOffset-1];
             otherDepth.x = DepthResult[resultOffset-1];
         }
-        if (srcX < 255U)
+        if (srcX < ScreenWidth-1)
         {
             otherAttr.y = AttrResult[resultOffset+1];
             otherDepth.y = DepthResult[resultOffset+1];
         }
         if (gl_GlobalInvocationID.y > 0U)
         {
-            otherAttr.z = AttrResult[resultOffset-256];
-            otherDepth.z = DepthResult[resultOffset-256];
+            otherAttr.z = AttrResult[resultOffset-ScreenWidth];
+            otherDepth.z = DepthResult[resultOffset-ScreenWidth];
         }
-        if (gl_GlobalInvocationID.y < 191U)
+        if (gl_GlobalInvocationID.y < uint(ScreenHeight-1))
         {
-            otherAttr.w = AttrResult[resultOffset+256];
-            otherDepth.w = DepthResult[resultOffset+256];
+            otherAttr.w = AttrResult[resultOffset+ScreenWidth];
+            otherDepth.w = DepthResult[resultOffset+ScreenWidth];
         }
 
         uint polyId = bitfieldExtract(attr.x, 24, 5);
@@ -1451,7 +1461,32 @@ void main()
     //if (gl_LocalInvocationID.x == 7 || gl_LocalInvocationID.y == 7)
         //color.x = 0x1F00001FU | 0x40000000U;
 
-    FinalOutput[gl_GlobalInvocationID.y * 256U + gl_GlobalInvocationID.x] = color.x;
+    FinalOutput[gl_GlobalInvocationID.y * uint(ScreenWidth) + gl_GlobalInvocationID.x] = color.x;
+}
+
+#endif
+
+#ifdef Downsample
+
+// MPH-nx scaler: one sample per native pixel (the one nearest its centre)
+// from the render-size image, for the 2D compositor and display capture.
+layout (local_size_x = 32) in;
+
+layout (std430, binding = 6) readonly buffer HiresOutputBuffer
+{
+    uint HiresOutput[];
+};
+layout (std430, binding = 7) writeonly buffer NativeOutputBuffer
+{
+    uint NativeOutput[];
+};
+
+void main()
+{
+    uint x = gl_GlobalInvocationID.x, y = gl_GlobalInvocationID.y;
+    uint hx = (x * uint(ScreenWidth) + uint(ScreenWidth) / 2U) / 256U;
+    uint hy = (y * uint(ScreenHeight) + uint(ScreenHeight) / 2U) / 192U;
+    NativeOutput[y * 256U + x] = HiresOutput[hy * uint(ScreenWidth) + hx];
 }
 
 #endif

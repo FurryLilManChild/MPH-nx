@@ -314,9 +314,12 @@ if __name__ == '__main__':
     if rp and os.path.exists(rp):
         for line in open(rp):
             p = line.split('#')[0].split()
-            if p: roots.append((int(p[0], 16) & ~1, len(p) > 1 and p[1].startswith('t')))
+            if p:
+                ov = [int(x[3:]) for x in p[1:] if x.startswith('ov=')]
+                roots.append((int(p[0], 16) & ~1, any(x.startswith('t') for x in p[1:]),
+                              ov[0] if ov else None))
     static_lo = [(a, a + len(b)) for _, a, b in segs]
-    for a, th in roots:
+    for a, th, _ in roots:
         if any(lo <= a < hi for lo, hi in static_lo): an.add_entry(a, th, 'runtime')
     an.run()
     report(an, 'static, entry only')
@@ -348,9 +351,12 @@ def analyze_all(rom_path, verbose=True):
     if rp and os.path.exists(rp):
         for line in open(rp):
             p = line.split('#')[0].split()
-            if p: roots.append((int(p[0], 16) & ~1, len(p) > 1 and p[1].startswith('t')))
+            if p:
+                ov = [int(x[3:]) for x in p[1:] if x.startswith('ov=')]
+                roots.append((int(p[0], 16) & ~1, any(x.startswith('t') for x in p[1:]),
+                              ov[0] if ov else None))
     static_lo = [(a, a + len(b)) for _, a, b in segs]
-    for a, th in roots:
+    for a, th, _ in roots:
         if any(lo <= a < hi for lo, hi in static_lo): an.add_entry(a, th, 'runtime')
     an.run()
     for _ in range(3):
@@ -368,8 +374,8 @@ def analyze_all(rom_path, verbose=True):
             v = oan.img.r32(a)
             if v: oan.add_entry(v, bool(v & 1), 'sinit')
         lo, hi = o['ram'], o['ram'] + len(o['image'])
-        for a, th in roots:
-            if lo <= a < hi: oan.add_entry(a, th, 'runtime')
+        for a, th, ov in roots:
+            if lo <= a < hi and (ov is None or ov == o['id']): oan.add_entry(a, th, 'runtime')
         for f in an.funcs.values():
             for t, th in f.calls | f.tail:
                 if lo <= t < hi: oan.add_entry(t, th, 'static-call')

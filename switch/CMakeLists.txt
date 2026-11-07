@@ -13,7 +13,7 @@ if(NOT NINTENDO_SWITCH)
     message(FATAL_ERROR "MPH-nx: configure with the devkitPro Switch toolchain")
 endif()
 
-set(MPHNX_VERSION "switch-native4" CACHE STRING "Version string shown in logs and hbmenu")
+set(MPHNX_VERSION "switch-native5" CACHE STRING "Version string shown in logs and hbmenu")
 set(MPHNX_TITLE "MPH-nx" CACHE STRING "Name shown in hbmenu")
 option(MPHNX_PIE_LIBS "Compile the runner's static libraries (game banks included) as -fPIE instead of -fPIC" ON)
 set(MPHNX_PERF_BANK_DIR "" CACHE PATH "Flat-AOT mph_perf_arm9 bank (nds_recompile --flat-execution); empty = faithful only")

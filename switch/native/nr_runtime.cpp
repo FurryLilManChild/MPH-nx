@@ -103,6 +103,45 @@ static const NrEntry* find(const NrEntry* tab, uint32_t n, uint32_t key) {
     return (it != e && it->key == key) ? it : nullptr;
 }
 
+// Direct entry tables: one slot per ARM word / Thumb halfword, so a lookup is
+// one load instead of a binary search (native4: about 5% of the thread).
+struct DirTab {
+    uint32_t lo = 0, hi = 0;
+    std::vector<NrFn> arm, thm;
+    void build(const NrEntry* tab, uint32_t n, uint32_t lo_, uint32_t hi_) {
+        lo = lo_ & ~3u; hi = (hi_ + 3u) & ~3u;
+        arm.assign((hi - lo) >> 2, nullptr);
+        thm.assign((hi - lo) >> 1, nullptr);
+        for (uint32_t i = 0; i < n; ++i) {
+            const uint32_t a = tab[i].key & ~1u;
+            if (a < lo || a >= hi) continue;
+            if (tab[i].key & 1u) thm[(a - lo) >> 1] = tab[i].fn;
+            else if (!(a & 3u)) arm[(a - lo) >> 2] = tab[i].fn;
+        }
+    }
+    inline NrFn get(uint32_t key) const {
+        const uint32_t a = key & ~1u;
+        if (a < lo || a >= hi) return nullptr;
+        if (key & 1u) return thm[(a - lo) >> 1];
+        return (a & 3u) ? nullptr : arm[(a - lo) >> 2];
+    }
+};
+static DirTab g_dir_static;
+static std::vector<DirTab> g_dir_ov;
+static void dir_build() {
+    uint32_t lo = 0xFFFFFFFFu, hi = 0;
+    for (uint32_t i = 0; i < nr_tab_static_count; ++i) {
+        lo = std::min(lo, nr_tab_static[i].key & ~1u);
+        hi = std::max(hi, (nr_tab_static[i].key & ~1u) + 4u);
+    }
+    if (nr_tab_static_count) g_dir_static.build(nr_tab_static, nr_tab_static_count, lo, hi);
+    g_dir_ov.resize(nr_overlay_count);
+    for (uint32_t i = 0; i < nr_overlay_count; ++i) {
+        const NrOverlay& o = nr_overlays[i];
+        g_dir_ov[i].build(o.tab, o.count, o.ram, o.ram + o.size);
+    }
+}
+
 // key = address | thumb bit
 static NrFn nr_lookup(uint32_t key) {
     const uint32_t a = key & ~1u;
@@ -112,7 +151,7 @@ static NrFn nr_lookup(uint32_t key) {
             for (uint32_t i = 0; i < nr_overlay_count; ++i) {
                 const NrOverlay& o = nr_overlays[i];
                 if (g_ov_resident[i] == 1 && a >= o.ram && a < o.ram + o.size) {
-                    if (const NrEntry* e = find(o.tab, o.count, key)) return e->fn;
+                    if (NrFn fn = g_dir_ov[i].get(key)) return fn;
                 }
             }
             // Not found: an overlay may have been loaded by a path that does
@@ -121,8 +160,7 @@ static NrFn nr_lookup(uint32_t key) {
         }
         return nullptr;
     }
-    if (const NrEntry* e = find(nr_tab_static, nr_tab_static_count, key)) return e->fn;
-    return nullptr;
+    return g_dir_static.get(key);
 }
 
 // ---------------------------------------------------------------------------
@@ -841,8 +879,11 @@ static void heartbeat_main() {
 }
 
 // Installed by the Switch layer before the runner starts.
+extern bool g_nx_lean_interp;
 extern "C" void nr_install(void) {
     g_nx_native_build = true;
+    g_nx_lean_interp = true;
+    dir_build();
     g_nx_arm9_native_hook = nr_resume_arm9;
     g_nx_remap_hook = remap_hook;
     std::thread(heartbeat_main).detach();

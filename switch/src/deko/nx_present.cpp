@@ -6,8 +6,13 @@
 
 #include <switch.h>
 #include <array>
+#include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
 
 namespace
 {
@@ -29,6 +34,55 @@ dk::Image g_black;
 dk::CmdBuf g_cmd;
 dk::Fence g_fence[kSlots];
 bool g_fence_used[kSlots];
+
+// Resolution scaler: render-size top screen composed by HdCompose.
+constexpr int kHiMaxW = 512, kHiMaxH = 384;
+constexpr uint32_t kHdLayerBytes = kDsW * kDsH * 8;     // RG32 pairs
+constexpr uint32_t kHdParamsBytes = 256;
+dk::Shader g_compose;
+bool g_compose_ok = false;
+dk::MemBlock g_hd_in_mem, g_hd_out_mem;
+uint32_t g_hd_in_off[kSlots], g_hd_out_off[kSlots];
+dk::Image g_hd_out_img[kSlots][2];  // 384x288 and 512x384 views of one buffer
+
+struct HdParams {
+    uint32_t out_w, out_h, bldcnt, eva, evb, evy, master_bright, prio3d, order3d,
+             render_xpos, output_width, step_x, step_y;
+};
+
+// Presenter thread: the emulation thread copies a frame into `g_job[w]` and
+// moves on; the thread presents the newest complete frame (an older one that
+// was never shown is dropped, as a display at 60 Hz would drop it anyway).
+struct Job {
+    std::vector<uint32_t> top, bottom, hd_top, hd_below;
+    NxPresentFrame f{};
+    std::string hud, notice;
+};
+Job g_job[2];
+int g_job_ready = -1;        // index of the newest unpresented job, -1 none
+int g_job_busy = -1;         // index the thread is presenting
+std::mutex g_job_m;
+std::condition_variable g_job_cv;
+std::thread g_thread;
+void present_now(const NxPresentFrame& f);
+void thread_main()
+{
+    for (;;) {
+        int idx;
+        {
+            std::unique_lock<std::mutex> lock(g_job_m);
+            g_job_cv.wait(lock, [] { return g_job_ready >= 0; });
+            idx = g_job_ready;
+            g_job_ready = -1;
+            g_job_busy = idx;
+        }
+        present_now(g_job[idx].f);
+        {
+            std::lock_guard<std::mutex> lock(g_job_m);
+            g_job_busy = -1;
+        }
+    }
+}
 
 uint32_t align_up(uint32_t v, uint32_t a) { return (v + a - 1) & ~(a - 1); }
 
@@ -128,7 +182,7 @@ bool nx_present_init()
     dk::Device dev = NxDeko::Device;
 
     g_queue = dk::QueueMaker{dev}
-        .setFlags(DkQueueFlags_Graphics | DkQueueFlags_MediumPrio | DkQueueFlags_DisableZcull)
+        .setFlags(DkQueueFlags_Graphics | DkQueueFlags_Compute | DkQueueFlags_MediumPrio | DkQueueFlags_DisableZcull)
         .create();
     if (!g_queue) { std::fprintf(stderr, "[present] queue failed\n"); return false; }
 
@@ -171,17 +225,47 @@ bool nx_present_init()
         .create();
     g_cmd = dk::CmdBufMaker{dev}.create();
 
+    // Resolution scaler resources
+    g_compose_ok = NxDeko::LoadShader("HdCompose", g_compose);
+    {
+        const uint32_t in_slot = align_up(2 * kHdLayerBytes + kHdParamsBytes, 0x1000);
+        g_hd_in_mem = dk::MemBlockMaker{dev, align_up(in_slot * kSlots, DK_MEMBLOCK_ALIGNMENT)}
+            .setFlags(DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached)
+            .create();
+        for (int i = 0; i < kSlots; ++i) g_hd_in_off[i] = i * in_slot;
+        const uint32_t out_slot = align_up(kHiMaxW * kHiMaxH * 4, 0x10000);
+        g_hd_out_mem = dk::MemBlockMaker{dev, align_up(out_slot * kSlots, DK_MEMBLOCK_ALIGNMENT)}
+            .setFlags(DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image)
+            .create();
+        for (int i = 0; i < kSlots; ++i) {
+            g_hd_out_off[i] = i * out_slot;
+            const uint32_t dims[2][2] = {{384, 288}, {512, 384}};
+            for (int v = 0; v < 2; ++v) {
+                dk::ImageLayout layout;
+                dk::ImageLayoutMaker{dev}
+                    .setFlags(DkImageFlags_PitchLinear | DkImageFlags_Usage2DEngine)
+                    .setFormat(DkImageFormat_BGRA8_Unorm)
+                    .setDimensions(dims[v][0], dims[v][1])
+                    .setPitchStride(dims[v][0] * 4)
+                    .initialize(layout);
+                g_hd_out_img[i][v].initialize(layout, g_hd_out_mem, g_hd_out_off[i]);
+            }
+        }
+    }
+
     g_swapchain = dk::SwapchainMaker{dev, nwindowGetDefault(), fbs}.create();
     if (!g_swapchain) { std::fprintf(stderr, "[present] swapchain failed\n"); return false; }
     g_swapchain.setSwapInterval(1);
     g_active = true;
+    g_thread = std::thread(thread_main);
+    g_thread.detach();
     std::fprintf(stderr, "[present] deko3d presenter ready (%dx%d, %d images)\n", kFbW, kFbH, kSlots);
     return true;
 }
 
-void nx_present_frame(const NxPresentFrame& f, NxPresentTicks* ticks)
+namespace {
+void present_now(const NxPresentFrame& f)
 {
-    if (!g_active) return;
     uint64_t t0 = armGetSystemTick();
     const int slot = g_queue.acquireImage(g_swapchain);
     if (g_fence_used[slot]) g_fence[slot].wait();
@@ -216,8 +300,40 @@ void nx_present_frame(const NxPresentFrame& f, NxPresentTicks* ticks)
     if (draw_bottom && !f.bottom_over_top)
         g_cmd.blitImage(bottom_view, {0, 0, 0, kDsW, kDsH, 1}, fb_view, rect(f.bottom_rect),
                         DkBlitFlag_FilterNearest);
-    g_cmd.blitImage(top_view, {0, 0, 0, kDsW, kDsH, 1}, fb_view, rect(f.top_rect),
-                    DkBlitFlag_FilterNearest);
+    const bool hd = f.hd && g_compose_ok && f.hd_top && f.hd_below && f.hi_addr &&
+                    ((f.hi_w == 384 && f.hi_h == 288) || (f.hi_w == 512 && f.hi_h == 384));
+    if (hd) {
+        uint8_t* in = static_cast<uint8_t*>(g_hd_in_mem.getCpuAddr()) + g_hd_in_off[slot];
+        std::memcpy(in, f.hd_top, kHdLayerBytes);
+        std::memcpy(in + kHdLayerBytes, f.hd_below, kHdLayerBytes);
+        const DkGpuAddr in_gpu = g_hd_in_mem.getGpuAddr() + g_hd_in_off[slot];
+        const DkGpuAddr par_gpu = in_gpu + 2 * kHdLayerBytes;
+        const DkGpuAddr out_gpu = g_hd_out_mem.getGpuAddr() + g_hd_out_off[slot];
+        HdParams p{};
+        p.out_w = (uint32_t)f.hi_w; p.out_h = (uint32_t)f.hi_h;
+        p.bldcnt = f.bldcnt; p.eva = f.eva; p.evb = f.evb; p.evy = f.evy;
+        p.master_bright = f.master_bright; p.prio3d = f.priority_3d; p.order3d = f.order_3d;
+        p.render_xpos = f.render_xpos; p.output_width = 256;
+        p.step_x = (uint32_t)((256u * 65536u + (uint32_t)f.hi_w - 1) / (uint32_t)f.hi_w);
+        p.step_y = (uint32_t)((192u * 65536u + (uint32_t)f.hi_h - 1) / (uint32_t)f.hi_h);
+        g_cmd.bindShaders(DkStageFlag_Compute, {&g_compose});
+        g_cmd.bindUniformBuffer(DkStage_Compute, 0, par_gpu, kHdParamsBytes);
+        g_cmd.pushConstants(par_gpu, kHdParamsBytes, 0, sizeof(p), &p);
+        g_cmd.bindStorageBuffers(DkStage_Compute, 0, {
+            {in_gpu, kHdLayerBytes},
+            {in_gpu + kHdLayerBytes, kHdLayerBytes},
+            {(DkGpuAddr)f.hi_addr, (uint32_t)(f.hi_w * f.hi_h * 4)},
+            {out_gpu, (uint32_t)(f.hi_w * f.hi_h * 4)},
+        });
+        g_cmd.dispatchCompute((uint32_t)(f.hi_w + 7) / 8, (uint32_t)(f.hi_h + 7) / 8, 1);
+        g_cmd.barrier(DkBarrier_Full, DkInvalidateFlags_Image | DkInvalidateFlags_L2Cache);
+        dk::ImageView hd_view{g_hd_out_img[slot][f.hi_w == 512 ? 1 : 0]};
+        g_cmd.blitImage(hd_view, {0, 0, 0, (uint32_t)f.hi_w, (uint32_t)f.hi_h, 1}, fb_view,
+                        rect(f.top_rect), DkBlitFlag_FilterLinear);
+    } else {
+        g_cmd.blitImage(top_view, {0, 0, 0, kDsW, kDsH, 1}, fb_view, rect(f.top_rect),
+                        DkBlitFlag_FilterNearest);
+    }
     if (draw_bottom && f.bottom_over_top)
         g_cmd.blitImage(bottom_view, {0, 0, 0, kDsW, kDsH, 1}, fb_view, rect(f.bottom_rect),
                         DkBlitFlag_FilterNearest);
@@ -232,12 +348,48 @@ void nx_present_frame(const NxPresentFrame& f, NxPresentTicks* ticks)
     g_queue.submitCommands(g_cmd.finishList());
     uint64_t t3 = armGetSystemTick();
     g_queue.presentImage(g_swapchain, slot);
-    uint64_t t4 = armGetSystemTick();
+    (void)t0; (void)t1; (void)t2; (void)t3;
+}
+}
+
+void nx_present_frame(const NxPresentFrame& in, NxPresentTicks* ticks)
+{
+    if (!g_active) return;
+    const uint64_t t0 = armGetSystemTick();
+    int w;
+    {
+        std::lock_guard<std::mutex> lock(g_job_m);
+        // a slot that is neither being presented nor... the other one
+        w = (g_job_busy == 0) ? 1 : (g_job_busy == 1) ? 0 : (g_job_ready == 0 ? 1 : 0);
+        if (g_job_ready == w) g_job_ready = -1;   // overwrite an unshown frame
+    }
+    Job& j = g_job[w];
+    j.f = in;
+    auto take = [](std::vector<uint32_t>& v, const uint32_t* src, size_t n) -> const uint32_t* {
+        if (!src) return nullptr;
+        v.assign(src, src + n);
+        return v.data();
+    };
+    j.f.top = take(j.top, in.top, kDsW * kDsH);
+    j.f.bottom = take(j.bottom, in.bottom, kDsW * kDsH);
+    if (in.hd) {
+        j.f.hd_top = take(j.hd_top, in.hd_top, kDsW * kDsH * 2);
+        j.f.hd_below = take(j.hd_below, in.hd_below, kDsW * kDsH * 2);
+    }
+    j.hud = in.hud_text ? in.hud_text : "";
+    j.notice = in.notice ? in.notice : "";
+    j.f.hud_text = in.hud_text ? j.hud.c_str() : nullptr;
+    j.f.notice = in.notice ? j.notice.c_str() : nullptr;
+    {
+        std::lock_guard<std::mutex> lock(g_job_m);
+        g_job_ready = w;
+    }
+    g_job_cv.notify_one();
     if (ticks) {
-        // Frontend tick units are SDL performance counter ticks; the caller
-        // converts. Here: system ticks (19.2 MHz).
-        ticks->upload = t2 - t1;
-        ticks->draw = (t1 - t0) + (t3 - t2);
-        ticks->swap = t4 - t3;
+        // System ticks (19.2 MHz); the caller converts. Only the copy is on
+        // the emulation thread now.
+        ticks->upload = armGetSystemTick() - t0;
+        ticks->draw = 0;
+        ticks->swap = 0;
     }
 }

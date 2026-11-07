@@ -13,6 +13,7 @@ extern dk::CmdBuf EmuCmdBuf;
 extern std::optional<GpuMemHeap> TextureHeap;
 extern std::optional<GpuMemHeap> ShaderCodeHeap;
 extern std::optional<GpuMemHeap> DataHeap;
+extern std::optional<GpuMemHeap> ReadbackHeap;
 
 // Creates the device, queue and heaps once. Returns false if deko3d could
 // not be brought up; the caller then keeps the software renderer.
