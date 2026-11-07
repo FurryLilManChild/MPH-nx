@@ -282,10 +282,13 @@ static void interp_step_body();
 // One interpreted instruction. A call it makes into code with no native entry
 // is logged as a call miss: those addresses become analysis roots.
 static void interp_step() {
-    const uint32_t pc0 = g_cpu.R[15];
+    const uint32_t pc0 = g_cpu.R[15], mode0 = g_cpu.cpsr & 0x1Fu;
     interp_step_body();
     const uint32_t lr = g_cpu.R[14] & ~1u, pc = g_cpu.R[15];
-    if ((lr == pc0 + 4u || lr == pc0 + 2u) && pc != lr && pc < 0xFFFF0000u) {
+    // A call: LR now holds the next instruction and the mode did not change
+    // (an SWI or an exception also sets LR, but switches mode).
+    if ((lr == pc0 + 4u || lr == pc0 + 2u) && pc != lr && pc < 0xFFFF0000u &&
+        pc0 < 0xFFFF0000u && (g_cpu.cpsr & 0x1Fu) == mode0) {
         const uint32_t k = cur_key_now();
         if (!nr_lookup(k)) note_miss(k, true);
     }

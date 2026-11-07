@@ -10,6 +10,7 @@
 #include <cstring>
 #include <string>
 extern "C" void nr_install(void);
+extern bool g_nx_fast_card;
 extern "C" uint32_t bus_read_u32_slow(uint32_t addr);
 const uint32_t* nds_gpu2d_framebuffer(int screen);
 
@@ -52,6 +53,7 @@ struct Install {
     Install() {
         const char* off = std::getenv("NR_DISABLE");
         if (!off || off[0] != '1') nr_install();
+        if (const char* fc = std::getenv("NR_FASTCARD")) g_nx_fast_card = fc[0] == '1';
         std::atexit(dump_at_exit);
     }
 } g_install;
