@@ -43,7 +43,9 @@ uint32_t runtime_coproc_read(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
 void runtime_clear_fast_limit(void);
 extern void (*g_nx_arm9_native_hook)(void);
 extern void (*g_nx_remap_hook)(void);
+void nx_bus_mark_all_written(void);
 }
+extern bool g_discover_static_misses;
 bool g_nx_native_build = false;
 void tier3_step_one(uint32_t pc);
 uint32_t nds_irq_pending(int cpu);
@@ -199,6 +201,7 @@ static void coro_main(void*) {
 extern "C" void nr_resume_arm9(void) {
     if (!g_arm9_started) {
         g_arm9_started = true;
+        nx_bus_mark_all_written();
         ov_bounds();
         nr_remap();
         g_boot_pc = g_cpu.R[15] | ((g_cpu.cpsr & CPSR_T_BIT) ? 1u : 0u);
@@ -223,8 +226,37 @@ static void note_miss(uint32_t key) {
     if (n <= 300) std::fprintf(stderr, "[native] no native code at %08X%s\n", key & ~1u, (key & 1) ? " (thumb)" : "");
 }
 
+static int g_nr_trace_interp = -1;   // host debug: NR_TRACE_INTERP=N logs N steps
+static void interp_step_inner();
+// The interpreter only runs code with write provenance unless static-miss
+// discovery is on; the BIOS ROM has none, but the IRQ return path and BIOS
+// calls run there. Allow it for BIOS addresses only.
 static void interp_step() {
+    if (g_cpu.R[15] >= 0xFFFF0000u) {
+        const bool keep = g_discover_static_misses;
+        g_discover_static_misses = true;
+        interp_step_inner();
+        g_discover_static_misses = keep;
+        return;
+    }
+    interp_step_inner();
+}
+static void interp_step_inner() {
     ++g_nr_stats[NR_STAT_INTERP];
+    if (g_nr_trace_interp < 0) {
+        const char* e = std::getenv("NR_TRACE_INTERP");
+        g_nr_trace_interp = e ? std::atoi(e) : 0;
+    }
+    if (g_nr_trace_interp > 0) {
+        --g_nr_trace_interp;
+        const uint32_t pc0 = g_cpu.R[15], cp0 = g_cpu.cpsr;
+        const unsigned long long c0 = g_runtime_cycles;
+        tier3_step_one(g_cpu.R[15]);
+        std::fprintf(stderr, "[native] interp %08X cpsr %08X -> %08X cpsr %08X cyc +%llu limit %llu halt %d dma %d term %d\n",
+                     pc0, cp0, g_cpu.R[15], g_cpu.cpsr, g_runtime_cycles - c0,
+                     (unsigned long long)g_nds_fast_limit, (int)nds_cpu_halted(0),
+                     (int)nds_dma_cpu_stalled(0), (int)g_nds_terminal);
+    } else
     tier3_step_one(g_cpu.R[15]);
     if (g_runtime_cycles >= g_nds_fast_limit) nr_service();
 }
@@ -253,26 +285,28 @@ static void nr_run(uint32_t key) {
 // Indirect call (BLX reg, function pointer, call into an overlay). LR is set.
 extern "C" void nr_call_dyn(uint32_t target) {
     ++g_nr_stats[NR_STAT_DYN];
-    const uint32_t ret = g_cpu.R[14];
+    const uint32_t ret = g_cpu.R[14] & ~1u;
     if (target & 1) g_cpu.cpsr |= CPSR_T_BIT; else g_cpu.cpsr &= ~CPSR_T_BIT;
     g_cpu.R[15] = target & ~1u;
-    if (NrFn fn = nr_lookup(target)) { fn(0); return; }
-    ++g_nr_stats[NR_STAT_DYN_MISS];
-    note_miss(target);
-    // Interpret until the callee returns to `ret`; hand back to native code
-    // wherever a native entry appears.
+    // Run guest code (native where it exists, interpreted otherwise) until the
+    // callee comes back to `ret`. redirect 2 is a plain jump (continue here);
+    // redirect 1 is a real redirect (thread switch, unexpected return): unwind.
+    bool first = true;
     for (;;) {
-        if (g_cpu.R[15] == (ret & ~1u)) return;
         const uint32_t k = cur_key();
         if (NrFn fn = nr_lookup(k)) {
             fn(k & ~1u);
-            if (nr_redirect) {
-                if (g_cpu.R[15] == (ret & ~1u)) { nr_redirect = 0; return; }
-                return;   // a real redirect: unwind to the top loop
-            }
-            continue;
+            if (!nr_redirect) return;
+            if (g_cpu.R[15] == ret) { nr_redirect = 0; return; }
+            if (nr_redirect == 2) { nr_redirect = 0; first = false; continue; }
+            return;
         }
+        if (first) { ++g_nr_stats[NR_STAT_DYN_MISS]; note_miss(k); }
+        first = false;
         interp_step();
+        if (nr_redirect == 1) return;
+        nr_redirect = 0;
+        if (g_cpu.R[15] == ret) return;
     }
 }
 
@@ -468,12 +502,178 @@ static void swi_via_bios(uint32_t num) {
     g_cpu.R[14] = ret;
     g_cpu.R[15] = nds_exception_base() + 0x08u;
     g_nr_last_swi = num;
+    // The interpreter only runs code with write provenance unless static-miss
+    // discovery is on; the BIOS ROM has none. Allow it for this call only.
+    const bool keep_discover = g_discover_static_misses;
+    g_discover_static_misses = true;
     // Step until the BIOS returns to the caller in its own mode.
     for (int guard = 0; guard < 50000000; ++guard) {
-        if (g_cpu.R[15] == ret && (g_cpu.cpsr & 0x1Fu) == (old & 0x1Fu)) return;
+        if (g_cpu.R[15] == ret && (g_cpu.cpsr & 0x1Fu) == (old & 0x1Fu)) {
+            g_discover_static_misses = keep_discover;
+            return;
+        }
         interp_step();
     }
+    g_discover_static_misses = keep_discover;
+    std::fprintf(stderr, "[native] BIOS call %02X did not return (pc %08X)\n", num, g_cpu.R[15]);
     nds_halt("native: BIOS call did not return");
+}
+
+// ---------------------------------------------------------------------------
+// Native BIOS: wait loop, CRC and the decompressors (GBATEK "BIOS Functions").
+// Decompression reads the source, builds the output in a host buffer, then
+// writes it in the unit size the SWI uses (8-bit for WRAM, 16-bit for VRAM).
+// ---------------------------------------------------------------------------
+static inline uint8_t rd8h(uint32_t a) {
+    const uintptr_t b = nr_rd_tab[a >> 12];
+    if (b) return *(const uint8_t*)(b + (a & 0xFFFu));
+    return (uint8_t)bus_read_u8_slow(a);
+}
+static inline void wr8h(uint32_t a, uint8_t v) {
+    const uintptr_t b = nr_wr_tab[a >> 12];
+    if (b) { *(uint8_t*)(b + (a & 0xFFFu)) = v; return; }
+    note_store(a); bus_write_u8_slow(a, v);
+}
+static void put_out(uint32_t dst, const std::vector<uint8_t>& out, bool vram) {
+    if (vram) {
+        for (size_t i = 0; i + 1 < out.size(); i += 2)
+            wr16h(dst + (uint32_t)i, (uint16_t)(out[i] | (out[i + 1] << 8)));
+        if (out.size() & 1) wr16h(dst + (uint32_t)out.size() - 1, out.back());
+    } else {
+        for (size_t i = 0; i < out.size(); ++i) wr8h(dst + (uint32_t)i, out[i]);
+    }
+    g_runtime_cycles += 16u + (uint64_t)out.size() * 2u;
+}
+
+static void swi_lz77(bool vram) {
+    uint32_t src = g_cpu.R[0];
+    const uint32_t hdr = rd32(src & ~3u); src += 4;
+    const uint32_t size = hdr >> 8;
+    std::vector<uint8_t> out; out.reserve(size);
+    while (out.size() < size) {
+        uint8_t flags = rd8h(src++);
+        for (int k = 0; k < 8 && out.size() < size; ++k, flags <<= 1) {
+            if (flags & 0x80) {
+                const uint8_t b0 = rd8h(src++), b1 = rd8h(src++);
+                const uint32_t len = (b0 >> 4) + 3u, disp = (((b0 & 0xFu) << 8) | b1) + 1u;
+                for (uint32_t i = 0; i < len && out.size() < size; ++i)
+                    out.push_back(disp <= out.size() ? out[out.size() - disp] : 0);
+            } else {
+                out.push_back(rd8h(src++));
+            }
+        }
+    }
+    put_out(g_cpu.R[1], out, vram);
+}
+
+static void swi_rl(bool vram) {
+    uint32_t src = g_cpu.R[0];
+    const uint32_t hdr = rd32(src & ~3u); src += 4;
+    const uint32_t size = hdr >> 8;
+    std::vector<uint8_t> out; out.reserve(size);
+    while (out.size() < size) {
+        const uint8_t f = rd8h(src++);
+        if (f & 0x80) {
+            const uint8_t v = rd8h(src++);
+            for (uint32_t i = 0; i < (f & 0x7Fu) + 3u && out.size() < size; ++i) out.push_back(v);
+        } else {
+            for (uint32_t i = 0; i < f + 1u && out.size() < size; ++i) out.push_back(rd8h(src++));
+        }
+    }
+    put_out(g_cpu.R[1], out, vram);
+}
+
+static void swi_huff() {
+    const uint32_t src = g_cpu.R[0];
+    const uint32_t hdr = rd32(src & ~3u);
+    const uint32_t bits = hdr & 0xFu, size = hdr >> 8;
+    const uint32_t tree = src + 4u;                       // tree size byte
+    uint32_t stream = tree + (rd8h(tree) + 1u) * 2u;
+    std::vector<uint8_t> out; out.reserve(size + 4);
+    uint32_t acc = 0, accbits = 0;
+    uint32_t node = tree + 1u;                            // root
+    while (out.size() < size) {
+        const uint32_t word = rd32(stream & ~3u); stream += 4;
+        for (int i = 31; i >= 0 && out.size() < size; --i) {
+            const uint8_t n = rd8h(node);
+            const uint32_t bit = (word >> i) & 1u;
+            const uint32_t next = (node & ~1u) + (n & 0x3Fu) * 2u + 2u + bit;
+            const bool is_data = bit ? (n & 0x40) : (n & 0x80);
+            if (is_data) {
+                acc |= (uint32_t)rd8h(next) << accbits; accbits += bits;
+                if (accbits >= 8) { out.push_back((uint8_t)acc); acc >>= 8; accbits -= 8; }
+                node = tree + 1u;
+            } else {
+                node = next;
+            }
+        }
+    }
+    out.resize(size);
+    // Written in 32-bit units.
+    const uint32_t dst = g_cpu.R[1] & ~3u;
+    for (size_t i = 0; i < out.size(); i += 4) {
+        uint32_t w = 0;
+        for (int k = 0; k < 4 && i + k < out.size(); ++k) w |= (uint32_t)out[i + k] << (8 * k);
+        wr32h(dst + (uint32_t)i, w);
+    }
+    g_runtime_cycles += 16u + (uint64_t)size * 4u;
+}
+
+static void swi_diff(bool sixteen) {
+    uint32_t src = g_cpu.R[0];
+    const uint32_t hdr = rd32(src & ~3u); src += 4;
+    const uint32_t size = hdr >> 8;
+    if (sixteen) {
+        uint16_t v = 0; uint32_t dst = g_cpu.R[1] & ~1u;
+        for (uint32_t i = 0; i < size; i += 2, src += 2, dst += 2) {
+            v = (uint16_t)(v + rd16h(src)); wr16h(dst, v);
+        }
+    } else {
+        uint8_t v = 0; uint32_t dst = g_cpu.R[1];
+        for (uint32_t i = 0; i < size; ++i) { v = (uint8_t)(v + rd8h(src++)); wr8h(dst++, v); }
+    }
+    g_runtime_cycles += 16u + (uint64_t)size * 2u;
+}
+
+static void swi_bitunpack() {
+    uint32_t src = g_cpu.R[0], dst = g_cpu.R[1] & ~3u;
+    const uint32_t info = g_cpu.R[2];
+    const uint32_t len = rd16h(info);
+    const uint32_t sw = rd8h(info + 2), dw = rd8h(info + 3);
+    const uint32_t off_word = rd32(info + 4);
+    const uint32_t offset = off_word & 0x7FFFFFFFu;
+    const bool zero_too = (off_word >> 31) != 0;
+    if (!sw || !dw || sw > 8 || dw > 32) return;
+    uint32_t acc = 0, accbits = 0;
+    for (uint32_t i = 0; i < len; ++i) {
+        const uint8_t b = rd8h(src++);
+        for (uint32_t s = 0; s < 8; s += sw) {
+            uint32_t v = (b >> s) & ((1u << sw) - 1u);
+            if (v || zero_too) v += offset;
+            acc |= (dw == 32 ? v : (v & ((1u << dw) - 1u))) << accbits;
+            accbits += dw;
+            if (accbits >= 32) { wr32h(dst, acc); dst += 4; acc = 0; accbits = 0; }
+        }
+    }
+    g_runtime_cycles += 16u + len * 8u;
+}
+
+static void swi_crc16() {
+    uint32_t crc = g_cpu.R[0] & 0xFFFFu;
+    const uint32_t a = g_cpu.R[1], n = g_cpu.R[2];
+    for (uint32_t i = 0; i < n; ++i) {
+        crc ^= rd8h(a + i);
+        for (int k = 0; k < 8; ++k) crc = (crc & 1u) ? (crc >> 1) ^ 0xA001u : (crc >> 1);
+    }
+    g_cpu.R[0] = crc;
+    g_runtime_cycles += 8u + n * 2u;
+}
+
+static void swi_wait_by_loop() {
+    const int32_t n = (int32_t)g_cpu.R[0];
+    if (n > 0) g_runtime_cycles += (uint64_t)n * 4u;
+    g_cpu.R[0] = 0;
+    if (g_runtime_cycles >= g_nds_fast_limit) nr_service();
 }
 
 extern "C" void nr_swi(uint32_t num) {
@@ -504,6 +704,16 @@ extern "C" void nr_swi(uint32_t num) {
     case 0x0B: ++g_nr_stats[NR_STAT_SWI_HLE]; g_nr_last_swi = num; swi_cpu_set(); return;      // CpuSet
     case 0x0C: ++g_nr_stats[NR_STAT_SWI_HLE]; g_nr_last_swi = num; swi_cpu_fast_set(); return; // CpuFastSet
     case 0x0F: ++g_nr_stats[NR_STAT_SWI_HLE]; g_cpu.R[0] = 0; return;   // IsDebugger
+    case 0x03: ++g_nr_stats[NR_STAT_SWI_HLE]; g_nr_last_swi = num; swi_wait_by_loop(); return;
+    case 0x0E: ++g_nr_stats[NR_STAT_SWI_HLE]; g_nr_last_swi = num; swi_crc16(); return;
+    case 0x10: ++g_nr_stats[NR_STAT_SWI_HLE]; g_nr_last_swi = num; swi_bitunpack(); return;
+    case 0x11: ++g_nr_stats[NR_STAT_SWI_HLE]; g_nr_last_swi = num; swi_lz77(false); return;
+    case 0x12: ++g_nr_stats[NR_STAT_SWI_HLE]; g_nr_last_swi = num; swi_lz77(true); return;
+    case 0x13: ++g_nr_stats[NR_STAT_SWI_HLE]; g_nr_last_swi = num; swi_huff(); return;
+    case 0x14: ++g_nr_stats[NR_STAT_SWI_HLE]; g_nr_last_swi = num; swi_rl(false); return;
+    case 0x15: ++g_nr_stats[NR_STAT_SWI_HLE]; g_nr_last_swi = num; swi_rl(true); return;
+    case 0x16: ++g_nr_stats[NR_STAT_SWI_HLE]; g_nr_last_swi = num; swi_diff(false); return;
+    case 0x18: ++g_nr_stats[NR_STAT_SWI_HLE]; g_nr_last_swi = num; swi_diff(true); return;
     default:
         swi_via_bios(num);
         return;

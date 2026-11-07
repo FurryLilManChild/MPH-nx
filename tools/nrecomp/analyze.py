@@ -305,6 +305,19 @@ if __name__ == '__main__':
     img = Image(segs)
     an = Analyzer(img)
     an.add_entry(r.arm9_entry, False, 'entry')
+    # Extra roots found at run time (the native engine logs "[native] no native
+    # code at ADDR"). NR_EXTRA_ROOTS names a file of "ADDR [thumb]" lines. The
+    # list is derived from the game: keep it out of the repository.
+    roots = []
+    import os
+    rp = os.environ.get('NR_EXTRA_ROOTS')
+    if rp and os.path.exists(rp):
+        for line in open(rp):
+            p = line.split('#')[0].split()
+            if p: roots.append((int(p[0], 16) & ~1, len(p) > 1 and p[1].startswith('t')))
+    static_lo = [(a, a + len(b)) for _, a, b in segs]
+    for a, th in roots:
+        if any(lo <= a < hi for lo, hi in static_lo): an.add_entry(a, th, 'runtime')
     an.run()
     report(an, 'static, entry only')
     for k in range(3):
@@ -326,6 +339,19 @@ def analyze_all(rom_path, verbose=True):
     segs = r.arm9_segments()
     an = Analyzer(Image(segs))
     an.add_entry(r.arm9_entry, False, 'entry')
+    # Extra roots found at run time (the native engine logs "[native] no native
+    # code at ADDR"). NR_EXTRA_ROOTS names a file of "ADDR [thumb]" lines. The
+    # list is derived from the game: keep it out of the repository.
+    roots = []
+    import os
+    rp = os.environ.get('NR_EXTRA_ROOTS')
+    if rp and os.path.exists(rp):
+        for line in open(rp):
+            p = line.split('#')[0].split()
+            if p: roots.append((int(p[0], 16) & ~1, len(p) > 1 and p[1].startswith('t')))
+    static_lo = [(a, a + len(b)) for _, a, b in segs]
+    for a, th in roots:
+        if any(lo <= a < hi for lo, hi in static_lo): an.add_entry(a, th, 'runtime')
     an.run()
     for _ in range(3):
         if not an.pointer_scan(): break
@@ -342,6 +368,8 @@ def analyze_all(rom_path, verbose=True):
             v = oan.img.r32(a)
             if v: oan.add_entry(v, bool(v & 1), 'sinit')
         lo, hi = o['ram'], o['ram'] + len(o['image'])
+        for a, th in roots:
+            if lo <= a < hi: oan.add_entry(a, th, 'runtime')
         for f in an.funcs.values():
             for t, th in f.calls | f.tail:
                 if lo <= t < hi: oan.add_entry(t, th, 'static-call')

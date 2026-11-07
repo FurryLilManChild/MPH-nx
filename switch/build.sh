@@ -87,6 +87,8 @@ if [ "$NATIVE" = 1 ]; then
   [ -f "$MPH_ROM_REV1" ] || die "Rev 1 ROM not found at $MPH_ROM_REV1"
   [ "$(sha1sum "$MPH_ROM_REV1" | cut -c1-40)" = "$ROM_SHA1_REV1" ] || die "Rev 1 ROM SHA-1 mismatch"
   NATIVE_DIR="$BUILD_DIR/nrgen"
+  # Runtime roots found by boot tests (derived from the game; never committed).
+  export NR_EXTRA_ROOTS="${NR_EXTRA_ROOTS:-$(dirname "$BUILD_DIR")/nrroots.txt}"
   python3 "$HERE/../tools/nrecomp/gen_all.py" "$MPH_ROM_REV1" "$NATIVE_DIR" || die "native generation failed"
   PERF_DIR=""
 fi

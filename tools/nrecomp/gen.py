@@ -126,7 +126,7 @@ class FuncGen:
             self.w('    %s(0);' % cname)
         else:
             self.w('    nr_call_dyn(%s);' % h32(target | (1 if thumb_target else 0)))
-        self.w('    if (!nr_redirect && g_cpu.R[15] != _elr) nr_redirect = 1;')
+        self.w('    if (!nr_redirect && g_cpu.R[15] != _elr) nr_redirect = (_elr == 0xFFFFFFFFu) ? 2 : 1;')
         self.w('    NR_RET(); return;')
 
     def emit_dyn_jump(self, i, texpr, interwork, is_call=False):
@@ -152,7 +152,7 @@ class FuncGen:
         self.w('        if (nr_now >= nr_deadline) { NR_STORE(); g_cpu.R[15] = _t & ~1u; nr_service(); if (nr_redirect) return; NR_LOAD(); }')
         self.w('        _dj = _t; _djk = 1; goto L_DYN; }')
         self.w('      NR_STORE(); nr_call_dyn(_t);')
-        self.w('      if (!nr_redirect && g_cpu.R[15] != _elr) nr_redirect = 1;')
+        self.w('      if (!nr_redirect && g_cpu.R[15] != _elr) nr_redirect = (_elr == 0xFFFFFFFFu) ? 2 : 1;')
         self.w('      return; }')
 
     # -- instructions ----------------------------------------------------
@@ -510,7 +510,7 @@ class FuncGen:
             self.w('    %s(0);' % cname)
         else:
             self.w('    nr_call_dyn(%s);' % h32(tgt | (1 if self.f.thumb else 0)))
-        self.w('    if (!nr_redirect && g_cpu.R[15] != _elr) nr_redirect = 1;')
+        self.w('    if (!nr_redirect && g_cpu.R[15] != _elr) nr_redirect = (_elr == 0xFFFFFFFFu) ? 2 : 1;')
         self.w('    NR_RET(); return;')
 
     def op_bl(self, i):
@@ -535,6 +535,8 @@ class FuncGen:
         self.w('    NR_ENTER();')
         self.w('    NR_LOCALS();')
         self.w('    uint32_t _sv, _sc; (void)_sv; (void)_sc;')
+        # A call to the function's own entry address is a normal entry.
+        self.w('    if ((entry & ~1u) == %s) entry = 0;' % h32(f.entry))
         self.w('    const uint32_t _elr = entry ? 0xFFFFFFFFu : r14;')
         self.w('    uint32_t _dj = entry; int _djk = 0;')
         self.w('    if (!entry) goto L_%08X;' % f.entry)
@@ -548,8 +550,11 @@ class FuncGen:
                 self.w('    case %s: goto L_%08X;' % (h32(a), a))
         self.w('    default: break; }')
         self.w('    if (!_djk) { NR_STORE(); g_cpu.R[15] = entry; nr_redirect = 2; return; }')
+        # Entered mid-function (no known return address): a transfer out is
+        # a plain jump; the dispatcher continues there.
+        self.w('    if (_elr == 0xFFFFFFFFu) { NR_STORE(); g_cpu.R[15] = _dj & ~1u; nr_redirect = 2; return; }')
         self.w('    NR_STORE(); nr_call_dyn(_dj);')
-        self.w('    if (!nr_redirect && g_cpu.R[15] != _elr) nr_redirect = 1;')
+        self.w('    if (!nr_redirect && g_cpu.R[15] != _elr) nr_redirect = (_elr == 0xFFFFFFFFu) ? 2 : 1;')
         self.w('    return;')
         cyc = 0
         for idx, a in enumerate(addrs):

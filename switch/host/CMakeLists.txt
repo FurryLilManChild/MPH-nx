@@ -27,7 +27,15 @@ set(NDS_ARM9_DYNARMIC_ROOT "" CACHE PATH "" FORCE)
 set(NDSRECOMP_COMPILER_CACHE OFF CACHE STRING "" FORCE)
 set(NDS_LEAN_DIAGNOSTICS ON CACHE BOOL "" FORCE)
 
+# Turns on the MPH-nx native hooks in the upstream runner (scheduler, bus,
+# bank registration) that are otherwise Switch-only.
 add_subdirectory("${NDSRECOMP_ROOT}/runner" "${CMAKE_BINARY_DIR}/runner")
+set_source_files_properties(
+    "${NDSRECOMP_ROOT}/runner/src/scheduler.cpp"
+    "${NDSRECOMP_ROOT}/runner/src/bus.cpp"
+    "${NDSRECOMP_ROOT}/runner/src/runtime_arm.cpp"
+    DIRECTORY "${NDSRECOMP_ROOT}/runner"
+    PROPERTIES COMPILE_DEFINITIONS "MPHNX_HOST=1")
 
 set(_nat "${CMAKE_CURRENT_SOURCE_DIR}/../native")
 file(GLOB _native_units CONFIGURE_DEPENDS "${MPHNX_NATIVE_DIR}/nr_*.c")

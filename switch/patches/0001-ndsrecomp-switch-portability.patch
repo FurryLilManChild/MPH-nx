@@ -391,7 +391,7 @@ index b6a3e1a..592399b 100644
      if (std::rename(temporary.c_str(), save_path.c_str()) != 0) {
          set_error(error, "cannot replace save file: " +
 diff --git a/runner/src/bus.cpp b/runner/src/bus.cpp
-index d9e6d41..5e86f82 100644
+index d9e6d41..79773ba 100644
 --- a/runner/src/bus.cpp
 +++ b/runner/src/bus.cpp
 @@ -334,6 +334,12 @@ void watch_push(uint8_t write, uint8_t width, uint32_t addr, uint32_t value) {
@@ -407,21 +407,30 @@ index d9e6d41..5e86f82 100644
      BusEvent& e = g_ring[g_ring_w];
      e.seq = ++g_ring_seq;
      e.cpu = static_cast<uint8_t>(g_nds_active);
-@@ -530,6 +536,9 @@ uint32_t g_memt_dtcm_base = 0;
+@@ -530,6 +536,18 @@ uint32_t g_memt_dtcm_base = 0;
  uint32_t g_memt_dtcm_size = 0;    // dtcm_enable ? dtcm_size : 0
  }
  
-+#if defined(__SWITCH__)
++#if defined(__SWITCH__) || defined(MPHNX_HOST)
 +extern "C" { void (*g_nx_remap_hook)(void) = nullptr; }
++// MPH-nx native ARM9: its stores go straight to memory and never record
++// write provenance. Every byte of the RAM it can reach counts as written, so
++// the interpreter fallback and bank validation decide by content alone.
++extern "C" void nx_bus_mark_all_written(void) {
++    std::fill(g_main_ram_written.begin(), g_main_ram_written.end(), uint8_t{1});
++    std::fill(g_itcm_written.begin(), g_itcm_written.end(), uint8_t{1});
++    std::fill(g_dtcm_written.begin(), g_dtcm_written.end(), uint8_t{1});
++    std::fill(g_shared_wram_written.begin(), g_shared_wram_written.end(), uint8_t{1});
++}
 +#endif
  void bus_fast_refresh() {
      ++g_busf_mapping_generation;
      g_memt_itcm_limit = g_cp15.itcm_enable ? g_cp15.itcm_size : 0u;
-@@ -603,6 +612,10 @@ void bus_fast_refresh() {
+@@ -603,6 +621,10 @@ void bus_fast_refresh() {
              ? std::min<uint32_t>(g_cp15.dtcm_size,
                                   static_cast<uint32_t>(g_dtcm.size()))
              : 0u;
-+#if defined(__SWITCH__)
++#if defined(__SWITCH__) || defined(MPHNX_HOST)
 +    // MPH-nx native ARM9: its page table mirrors these windows.
 +    if (g_nx_remap_hook) g_nx_remap_hook();
 +#endif
@@ -2030,7 +2039,7 @@ index 4375eb7..9738dfc 100644
          if (nds_register_configured_title_banks(rom_sha1.c_str())) {
              std::fprintf(stderr,
 diff --git a/runner/src/runtime_arm.cpp b/runner/src/runtime_arm.cpp
-index 0238a6a..bc41f52 100644
+index 0238a6a..e3d55b6 100644
 --- a/runner/src/runtime_arm.cpp
 +++ b/runner/src/runtime_arm.cpp
 @@ -8,12 +8,13 @@
@@ -2155,12 +2164,12 @@ index 0238a6a..bc41f52 100644
  #endif
  }
  
-+#if defined(__SWITCH__)
++#if defined(__SWITCH__) || defined(MPHNX_HOST)
 +bool g_nx_drop_arm9_banks = false;
 +#endif
  extern "C" void nds_register_dispatch(int cpu, const DispatchEntry* t,
                                        unsigned len, uint32_t exc_base) {
-+#if defined(__SWITCH__)
++#if defined(__SWITCH__) || defined(MPHNX_HOST)
 +    // MPH-nx native ARM9: Rev 0 ARM9 banks never register for the native
 +    // program; the ARM7 banks (byte-identical code in Rev 1) still do.
 +    if (g_nx_drop_arm9_banks && cpu == NDS_ARM9) return;
@@ -2277,14 +2286,14 @@ index 0238a6a..bc41f52 100644
      clear_dispatch_cache_all();
      // dispatch_epoch restarts at 1 on reset, so the per-CPU epoch alone
 diff --git a/runner/src/scheduler.cpp b/runner/src/scheduler.cpp
-index a52d8db..b9baa96 100644
+index a52d8db..59e4000 100644
 --- a/runner/src/scheduler.cpp
 +++ b/runner/src/scheduler.cpp
 @@ -27,6 +27,10 @@
  #include "arm9_native.h"
  #endif
  
-+#if defined(__SWITCH__)
++#if defined(__SWITCH__) || defined(MPHNX_HOST)
 +// MPH-nx native ARM9: resumes the native program for this slice (nr_runtime).
 +extern "C" { void (*g_nx_arm9_native_hook)(void) = nullptr; }
 +#endif
@@ -2334,7 +2343,7 @@ index a52d8db..b9baa96 100644
      nds_slice_begin(cap);
      if (nds_cpu_halted(cpu)) {
          nds_cpu_wake(cpu);
-+#if defined(__SWITCH__)
++#if defined(__SWITCH__) || defined(MPHNX_HOST)
 +        // MPH-nx native ARM9 delivers the interrupt itself when it resumes.
 +        if (!(cpu == 0 && g_nx_arm9_native_hook))
 +#endif
@@ -2346,7 +2355,7 @@ index a52d8db..b9baa96 100644
  #if defined(NDS_ARM9_DYNARMIC)
          if (!nds_arm9_native_run())
 +#endif
-+#if defined(__SWITCH__)
++#if defined(__SWITCH__) || defined(MPHNX_HOST)
 +        if (cpu == 0 && g_nx_arm9_native_hook) { (void)pc; (void)t; g_nx_arm9_native_hook(); } else
  #endif
              runtime_dispatch(pc | t);
