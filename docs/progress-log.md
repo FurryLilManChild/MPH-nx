@@ -2,6 +2,13 @@
 
 Newest first.
 
+## 2026-11-07: switch-native2 and native3 results, switch-native3, switch-native4
+
+- native2: boots on Accurate; Fastest crashed during boot (the ARM7 ran wild). Controls felt great (Mark). Speed a bit below test13; about 51% of emulation time went to a call-stack list from the old engine that the interpreter fallback filled and native code never emptied.
+- native3: call-stack list cleared after each interpreted step; 182 missed routines plus the IRQ handler made native; every launch holds Accurate CPU sync for 20 s ("boot hold over" in the log), then uses the saved setting. Result: about 60 fps most of the time, large rooms still below full speed; title-menu transitions dropped to about 14 fps.
+- Menu cause: fast card loading was keyed to Rev 0 PCs, so on Rev 1 every 4-byte card data read took a full scheduler round.
+- native4: native card PIO path (ARM9 card reads with fast loading on get the next word at once; card DMA keeps exact timing); 2,782 static functions native with roots filtered by tools/nrecomp/rootfilter.py (a bad root after an svc broke the cloud test first); the DMA stall check runs only after DMA register writes. Cloud test matches the reference; interpreted instructions fell from 575k/s to 188k/s.
+
 ## 2026-11-07: switch-native1 results, cloud boot test, switch-native2
 
 - native1 white screen: Thumb SWIs went to the BIOS with LR bit 0 set (the BIOS reads the SWI number at [LR-2]), and the interpreter refused to run BIOS code (no write provenance).
