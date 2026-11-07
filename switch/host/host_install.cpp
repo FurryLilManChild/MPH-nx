@@ -3,6 +3,7 @@
 //   NR_DISABLE=1        leave it out: the ARM9 runs on upstream's interpreter
 //                       as a reference
 //   NR_DUMP=a:n,a:n     at exit, print n words from each guest address a
+//   NR_SHOT=file.ppm    at exit, write both screens (top above bottom)
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -10,9 +11,27 @@
 #include <string>
 extern "C" void nr_install(void);
 extern "C" uint32_t bus_read_u32_slow(uint32_t addr);
+const uint32_t* nds_gpu2d_framebuffer(int screen);
 
 namespace {
+void shot_at_exit() {
+    const char* f = std::getenv("NR_SHOT");
+    if (!f) return;
+    std::FILE* o = std::fopen(f, "wb");
+    if (!o) return;
+    std::fprintf(o, "P6\n256 384\n255\n");
+    for (int sc = 0; sc < 2; ++sc) {
+        const uint32_t* fb = nds_gpu2d_framebuffer(sc);
+        for (int i = 0; i < 256 * 192; ++i) {
+            const uint32_t p = fb ? fb[i] : 0;
+            const unsigned char rgb[3] = {(unsigned char)(p >> 16), (unsigned char)(p >> 8), (unsigned char)p};
+            std::fwrite(rgb, 1, 3, o);
+        }
+    }
+    std::fclose(o);
+}
 void dump_at_exit() {
+    shot_at_exit();
     const char* d = std::getenv("NR_DUMP");
     if (!d) return;
     std::string s(d);
