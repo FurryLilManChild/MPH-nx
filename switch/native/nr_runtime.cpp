@@ -297,7 +297,17 @@ static void interp_step_body() {
     }
     interp_step_inner();
 }
+static void interp_step_body2();
 static void interp_step_inner() {
+    interp_step_body2();
+    // The interpreter mirrors guest calls on the runtime's call-return stack
+    // (for the old bank engine). Native code never pops it, so it filled up
+    // and every interpreted return scanned all of it, and every scheduler
+    // slice copied it: half of native2's emulation time. The native engine
+    // does not use it; keep it empty.
+    if (runtime_call_stack_depth()) runtime_call_stack_restore(nullptr, 0);
+}
+static void interp_step_body2() {
     ++g_nr_stats[NR_STAT_INTERP];
     if (g_nr_trace_interp < 0) {
         const char* e = std::getenv("NR_TRACE_INTERP");
