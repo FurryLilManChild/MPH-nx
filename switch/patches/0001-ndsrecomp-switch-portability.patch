@@ -1619,7 +1619,7 @@ index 56dbb80..2640c44 100644
  
      if (info.cpu_brand.empty()) info.cpu_brand = "unknown";
 diff --git a/runner/src/io.cpp b/runner/src/io.cpp
-index 20544a0..f1b0473 100644
+index 20544a0..e3ea734 100644
 --- a/runner/src/io.cpp
 +++ b/runner/src/io.cpp
 @@ -1,5 +1,6 @@
@@ -1764,10 +1764,23 @@ index 20544a0..f1b0473 100644
  bool nds_gxfifo_stalled() { return g_gxfifo_stall; }
  
  unsigned long long nds_dma_entry_cycle(int cpu) {
-@@ -3240,8 +3313,36 @@ void nds_tick_timers(int cpu, unsigned long long cpu_cycles) {
+@@ -3240,8 +3313,50 @@ void nds_tick_timers(int cpu, unsigned long long cpu_cycles) {
      }
  }
  
++#if defined(__SWITCH__) || defined(MPHNX_HOST)
++// MPH-nx native ARM9 fast loading: a PIO read of the card data port by the
++// ARM9 with no ARM9 card DMA armed gets its next word at once (no per-word
++// card event, no slice end). The game's NitroSDK loop just reads words until
++// the block ends; nothing else watches the per-word timing. Card DMA keeps
++// the faithful per-word events, since its trigger is the word-ready event.
++extern bool g_nx_native_build;
++static bool nx_native_card_pio(int cpu) {
++    if (!g_nx_native_build || !g_nx_fast_card || cpu != 0 || g_card_irq_cpu != 0) return false;
++    for (const auto& d : g_dma[0]) if ((d.cnt & 0x80000000u) && d.start_mode == 5u) return false;
++    return true;
++}
++#endif
 +#if defined(__SWITCH__)
 +// Which ARM9 I/O accesses end a wide CPU-sync window. Faithful: all but the
 +// geometry command ports. Fast scheduler: only registers whose value another
@@ -1781,6 +1794,7 @@ index 20544a0..f1b0473 100644
 +// engine to the live ARM9 timestamp (melonDS GPU3D::Read32 0x600 -> Run()).
 +static inline int nx_io_fence_class(uint32_t addr) {
 +    if (g_nx_sync_nofence) return -1;
++    if (addr >= 0x04100010u && addr < 0x04100014u && nx_native_card_pio(active())) return -1;
 +    if (!g_nx_fast_sched) return (addr >= 0x04000400u && addr < 0x040005CCu) ? -1 : 6;
 +    if (addr >= 0x04000180u && addr < 0x04000190u) return 0;  // IPC
 +    if (addr >= 0x04100000u && addr < 0x04100010u) return 1;  // IPC FIFO
@@ -1801,7 +1815,7 @@ index 20544a0..f1b0473 100644
      const int cpu = active();
      const uint32_t m = mask_for(width);
      if (card_register_address(addr) && !card_owned_by(cpu)) return 0;
-@@ -3346,6 +3447,25 @@ uint32_t nds_io_read(uint32_t addr, uint32_t width) {
+@@ -3346,6 +3461,25 @@ uint32_t nds_io_read(uint32_t addr, uint32_t width) {
              return addr == 0x040001A2u ? (auxspi_read_data() & m) : 0u;
          case 0x040001A4: case 0x040001A5:
          case 0x040001A6: case 0x040001A7:
@@ -1827,11 +1841,11 @@ index 20544a0..f1b0473 100644
              return (g_romctrl >> ((addr & 3u) * 8)) & m;
          case 0x04000184: case 0x04000185:  // IPCFIFOCNT
              return (fifocnt_read(cpu) >> ((addr & 1u) * 8)) & m;
-@@ -3366,6 +3486,23 @@ uint32_t nds_io_read(uint32_t addr, uint32_t width) {
+@@ -3366,6 +3500,23 @@ uint32_t nds_io_read(uint32_t addr, uint32_t width) {
                  word = card_response_word(g_card_transfer_pos);
                  g_romctrl &= ~0x00800000u;
                  g_card_transfer_pos += 4u;
-+#if defined(__SWITCH__)
++#if defined(__SWITCH__) || defined(MPHNX_HOST)
 +                // MPH-nx fast loading v2: inside MPH's own NitroSDK PIO read
 +                // loop (0x020919EC..0x02091A10, ARM9, no card DMA), make the
 +                // next word ready at once instead of after a per-word card
@@ -1841,7 +1855,7 @@ index 20544a0..f1b0473 100644
 +                if (g_nx_fast_card && cpu == 0 && g_card_irq_cpu == 0 &&
 +                    g_card_transfer_pos < g_card_transfer_len) {
 +                    const uint32_t pc = g_cpu.R[15];
-+                    if (pc >= 0x020919ECu && pc < 0x02091A10u) {
++                    if ((pc >= 0x020919ECu && pc < 0x02091A10u) || nx_native_card_pio(cpu)) {
 +                        g_romctrl |= 0x00800000u;
 +                        ++g_nx_fast_card_words;
 +                        return word & m;
@@ -1851,7 +1865,7 @@ index 20544a0..f1b0473 100644
                  if (g_card_transfer_pos < g_card_transfer_len) {
                      const uint32_t xfercycle =
                          (g_romctrl & 0x08000000u) ? 8u : 5u;
-@@ -3399,8 +3536,23 @@ uint32_t nds_io_read(uint32_t addr, uint32_t width) {
+@@ -3399,8 +3550,23 @@ uint32_t nds_io_read(uint32_t addr, uint32_t width) {
  }
  
  void nds_io_write(uint32_t addr, uint32_t value, uint32_t width) {

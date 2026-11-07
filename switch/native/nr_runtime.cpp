@@ -165,9 +165,12 @@ static inline void note_store(uint32_t a) { if (a >= g_ov_lo && a < g_ov_hi) g_o
 // the next instruction sees the copied data. Only memory changes meanwhile, so
 // the generated code's register locals stay valid.
 static void nr_yield();
-static void io_stall_check() {
+static inline void io_stall_check_at(uint32_t a) {
+    // Only a DMA control write can start an immediate DMA.
+    if (a < 0x040000B0u || a >= 0x040000E0u) return;
     while (nds_dma_cpu_stalled(0)) { nr_yield(); g_nds_unwinding = 0; }
 }
+#define io_stall_check() io_stall_check_at(a)
 extern "C" void nr_io_wr32(uint32_t a, uint32_t v) { ++g_nr_stats[NR_STAT_IO]; note_store(a); bus_write_u32_slow(a, v); io_stall_check(); }
 extern "C" void nr_io_wr16(uint32_t a, uint32_t v) { ++g_nr_stats[NR_STAT_IO]; note_store(a); bus_write_u16_slow(a, (uint16_t)v); io_stall_check(); }
 extern "C" void nr_io_wr8(uint32_t a, uint32_t v) { ++g_nr_stats[NR_STAT_IO]; note_store(a); bus_write_u8_slow(a, (uint8_t)v); io_stall_check(); }
