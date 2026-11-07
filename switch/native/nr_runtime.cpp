@@ -244,13 +244,13 @@ extern "C" void nr_resume_arm9(void) {
 // ---------------------------------------------------------------------------
 // Coverage log: the first few hundred distinct addresses that ran on the
 // interpreter. The next build adds them as native entry points.
-static void note_miss(uint32_t key) {
-    static uint32_t seen[512]; static uint32_t n = 0;
+static void note_miss(uint32_t key, bool call = false) {
+    static uint32_t seen[2048]; static uint32_t n = 0;
     for (uint32_t i = 0; i < n; ++i) if (seen[i] == key) return;
-    if (n < 512) seen[n++] = key;
-    if (n <= 300) std::fprintf(stderr, "[native] no native code at %08X%s\n", key & ~1u, (key & 1) ? " (thumb)" : "");
+    if (n < 2048) seen[n++] = key;
+    if (n <= 1500) std::fprintf(stderr, "[native] no native code at %08X%s%s\n", key & ~1u, (key & 1) ? " (thumb)" : "", call ? " (call)" : "");
     const uint32_t a = key & ~1u;
-    if (n <= 300 && a >= g_ov_lo && a < g_ov_hi) {
+    if (n <= 1500 && a >= g_ov_lo && a < g_ov_hi) {
         for (uint32_t i = 0; i < nr_overlay_count; ++i) {
             const NrOverlay& o = nr_overlays[i];
             if (a < o.ram || a >= o.ram + o.size) continue;
@@ -273,7 +273,21 @@ static void interp_step_inner();
 // The interpreter only runs code with write provenance unless static-miss
 // discovery is on; the BIOS ROM has none, but the IRQ return path and BIOS
 // calls run there. Allow it for BIOS addresses only.
+static NrFn nr_lookup(uint32_t key);
+static uint32_t cur_key_now() { return g_cpu.R[15] | ((g_cpu.cpsr & CPSR_T_BIT) ? 1u : 0u); }
+static void interp_step_body();
+// One interpreted instruction. A call it makes into code with no native entry
+// is logged as a call miss: those addresses become analysis roots.
 static void interp_step() {
+    const uint32_t pc0 = g_cpu.R[15];
+    interp_step_body();
+    const uint32_t lr = g_cpu.R[14] & ~1u, pc = g_cpu.R[15];
+    if ((lr == pc0 + 4u || lr == pc0 + 2u) && pc != lr && pc < 0xFFFF0000u) {
+        const uint32_t k = cur_key_now();
+        if (!nr_lookup(k)) note_miss(k, true);
+    }
+}
+static void interp_step_body() {
     if (g_cpu.R[15] >= 0xFFFF0000u) {
         const bool keep = g_discover_static_misses;
         g_discover_static_misses = true;
@@ -340,12 +354,13 @@ extern "C" void nr_call_dyn(uint32_t target) {
         const uint32_t k = cur_key();
         if (NrFn fn = nr_lookup(k)) {
             fn(k & ~1u);
-            if (!nr_redirect) return;
             if (g_cpu.R[15] == ret) { nr_redirect = 0; return; }
-            if (nr_redirect == 2) { nr_redirect = 0; first = false; continue; }
+            // A native function called from interpreted code returned to it,
+            // or a plain jump: keep going until the callee reaches `ret`.
+            if (!nr_redirect || nr_redirect == 2) { nr_redirect = 0; first = false; continue; }
             return;
         }
-        if (first) { ++g_nr_stats[NR_STAT_DYN_MISS]; note_miss(k); }
+        if (first) { ++g_nr_stats[NR_STAT_DYN_MISS]; note_miss(k, true); }
         first = false;
         interp_step();
         if (nr_redirect == 1) return;
