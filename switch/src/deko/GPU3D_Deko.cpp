@@ -62,7 +62,7 @@ bool DekoRenderer::Init()
     YSpanIndicesTextureMemory = NxDeko::TextureHeap->Alloc(yspanIndicesLayout.getSize(), yspanIndicesLayout.getAlignment());
     YSpanIndicesTexture.initialize(yspanIndicesLayout, NxDeko::TextureHeap->MemBlock, YSpanIndicesTextureMemory.Offset);
 
-    static const char* const kSuffix[3] = {"", "_S15", "_S2"};
+    static const char* const kSuffix[5] = {"", "_S15", "_S2", "_S3", "_S4"};
     for (int si = 0; si < 3; si++)
     {
         ShaderSet& set = Sets[si];
@@ -130,7 +130,7 @@ bool DekoRenderer::Init()
         FinalOutputMemory[i] = NxDeko::ReadbackHeap->Alloc(256*192*4, 256);
         memset(NxDeko::ReadbackHeap->CpuAddr<void>(FinalOutputMemory[i]), 0, 256*192*4);
         armDCacheFlush(NxDeko::ReadbackHeap->CpuAddr<void>(FinalOutputMemory[i]), 256*192*4);
-        HiresOutputMemory[i] = NxDeko::DataHeap->Alloc(512*384*4, 256);
+        HiresOutputMemory[i] = NxDeko::DataHeap->Alloc(1024*768*4, 256);
     }
 
     return true;
@@ -949,8 +949,14 @@ void DekoRenderer::RenderFrame(GPU& gpu)
             {
                 const s32 hx = polygon->Vertices[k]->HiresPosition[0];
                 const s32 hy = polygon->Vertices[k]->HiresPosition[1];
-                Pos[k][0] = CurScale == 2 ? (hx >> 3) : ((hx * 3) >> 5);
-                Pos[k][1] = CurScale == 2 ? (hy >> 3) : ((hy * 3) >> 5);
+                // HiresPosition has 4 fraction bits: render pos = pos * scale / 16
+                switch (CurScale)
+                {
+                case 1: Pos[k][0] = (hx * 3) >> 5; Pos[k][1] = (hy * 3) >> 5; break;   // 1.5x
+                case 2: Pos[k][0] = hx >> 3; Pos[k][1] = hy >> 3; break;               // 2x
+                case 3: Pos[k][0] = (hx * 3) >> 4; Pos[k][1] = (hy * 3) >> 4; break;   // 3x
+                default: Pos[k][0] = hx >> 2; Pos[k][1] = hy >> 2; break;              // 4x
+                }
                 ytop = std::min(ytop, Pos[k][1]);
                 ybot = std::max(ybot, Pos[k][1]);
             }
@@ -1080,12 +1086,14 @@ void DekoRenderer::RenderFrame(GPU& gpu)
                 std::swap(minXY, maxXY);
             }
 
-            assert(numSetupIndices < MaxYSpanIndices);
-            YSpanIndices[numSetupIndices].PolyIdx = i;
-            YSpanIndices[numSetupIndices].SpanIdxL = curSpanL;
-            YSpanIndices[numSetupIndices].SpanIdxR = curSpanR;
-            YSpanIndices[numSetupIndices].Y = ytop;
-            numSetupIndices++;
+            if (numSetupIndices < MaxYSpanIndices)   // full: drop this polygon's line
+            {
+                YSpanIndices[numSetupIndices].PolyIdx = i;
+                YSpanIndices[numSetupIndices].SpanIdxL = curSpanL;
+                YSpanIndices[numSetupIndices].SpanIdxR = curSpanR;
+                YSpanIndices[numSetupIndices].Y = ytop;
+                numSetupIndices++;
+            }
         }
         else
         {
@@ -1167,6 +1175,7 @@ void DekoRenderer::RenderFrame(GPU& gpu)
                     SetupYSpan(i,&YSpanSetups[numYSpans++], polygon, curVR, nextVR, y, 1);
                 }
 
+                if (numSetupIndices >= MaxYSpanIndices) break;   // full: drop the rest of this polygon
                 assert(numSetupIndices < MaxYSpanIndices);
                 YSpanIndices[numSetupIndices].PolyIdx = i;
                 YSpanIndices[numSetupIndices].SpanIdxL = curSpanL;
@@ -1493,10 +1502,11 @@ void DekoRenderer::RenderFrame(GPU& gpu)
 void DekoRenderer::ApplyScale()
 {
     if (RequestedScale == CurScale) return;
-    CurScale = (RequestedScale >= 0 && RequestedScale <= 2) ? RequestedScale : 0;
+    CurScale = (RequestedScale >= 0 && RequestedScale <= 4) ? RequestedScale : 0;
     S = &Sets[CurScale];
-    ScrW = CurScale == 0 ? 256 : CurScale == 1 ? 384 : 512;
-    ScrH = CurScale == 0 ? 192 : CurScale == 1 ? 288 : 384;
+    static const int kW[5] = {256, 384, 512, 768, 1024}, kH[5] = {192, 288, 384, 576, 768};
+    ScrW = kW[CurScale];
+    ScrH = kH[CurScale];
     CurTilesPerLine = ScrW / TileSize;
     CurTileLines = ScrH / TileSize;
 }
@@ -1506,8 +1516,9 @@ bool DekoRenderer::HiresOutput(uint64_t* gpuAddr, int* w, int* h)
     if (ShownSlot < 0 || !OutputWaited || SlotScale[ShownSlot] == 0) return false;
     const int sc = SlotScale[ShownSlot];
     *gpuAddr = NxDeko::DataHeap->GpuAddr(HiresOutputMemory[ShownSlot]);
-    *w = sc == 1 ? 384 : 512;
-    *h = sc == 1 ? 288 : 384;
+    static const int kW[5] = {256, 384, 512, 768, 1024}, kH[5] = {192, 288, 384, 576, 768};
+    *w = kW[sc];
+    *h = kH[sc];
     return true;
 }
 

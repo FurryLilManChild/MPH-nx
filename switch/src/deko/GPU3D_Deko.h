@@ -59,7 +59,7 @@ private:
         dk::Shader ShaderFinalPass[8];
         dk::Shader ShaderDownsample;
     };
-    ShaderSet Sets[3];
+    ShaderSet Sets[5];
     ShaderSet* S = &Sets[0];
 public:
     // Requested scale index; applied at the next frame (0, 1 or 2).
@@ -206,16 +206,18 @@ private:
     static const int CoarseTileW = CoarseTileCountX * TileSize;
     static const int CoarseTileH = CoarseTileCountY * TileSize;
 
-    // Buffer sizes cover the largest render size (512x384); the shaders of
-    // each set use the prefix of every array that their size needs.
-    static const int TilesPerLine = 512/TileSize;
-    static const int TileLines = 384/TileSize;
+    // Buffer sizes cover the largest render size (1024x768, 4x); the shaders
+    // of each set use the prefix of every array that their size needs.
+    static const int TilesPerLine = 1024/TileSize;
+    static const int TileLines = 768/TileSize;
     int CurTilesPerLine = 256/TileSize, CurTileLines = 192/TileSize;
 
     static const int BinStride = 2048/32;
     static const int CoarseBinStride = BinStride/32;
 
-    static const int MaxWorkTiles = (256/TileSize)*(192/TileSize)*64;
+    // Work tiles (polygon x tile pairs): each shader set uses at most
+    // TilesPerLine*TileLines*WorkTileMul of them (build_deko_shaders.sh).
+    static const int MaxWorkTiles = 128*96*8;
     static const int MaxVariants = 256;
 
     struct BinResult
@@ -241,14 +243,15 @@ private:
 
     struct FinalTiles
     {
-        u32 ColorResult[512*384*2];
-        u32 DepthResult[512*384*2];
-        u32 AttrResult[512*384*2];
+        u32 ColorResult[1024*768*2];
+        u32 DepthResult[1024*768*2];
+        u32 AttrResult[1024*768*2];
     };
 
     // eh those are pretty bad guesses
     // though real hw shouldn't be eable to render all 2048 polygons on every line either
-    static const int MaxYSpanIndices = 64*2048*2;
+    // One per polygon per scanline: render size scales it (4x: 4x the lines).
+    static const int MaxYSpanIndices = 64*2048*8;
     static const int MaxYSpanSetups = 6144*2;
     SetupIndices YSpanIndices[MaxYSpanIndices];
     SpanSetupY YSpanSetups[MaxYSpanSetups];

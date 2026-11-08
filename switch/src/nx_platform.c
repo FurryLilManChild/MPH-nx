@@ -144,6 +144,16 @@ void nx_clocks_restore(void) {
     g_clk_open = false;
 }
 
+// Port menu Speed > CPU clock: 1 boost (NX_CPU_BOOST_HZ), 0 stock 1020 MHz.
+void nx_clocks_set_boost(int on) {
+    if (!g_clk_open) return;
+    const u32 hz = on ? NX_CPU_BOOST_HZ : 1020000000u;
+    if (R_SUCCEEDED(clkrstSetClockRate(&g_cpu_session, hz))) g_cpu_applied_hz = hz;
+    u32 now = 0;
+    clkrstGetClockRate(&g_cpu_session, &now);
+    printf("[mph-nx] cpu clock set to %u MHz (reads back %u MHz)\n", hz / 1000000u, now / 1000000u);
+}
+
 const char* nx_clocks_status(void) {
     if (g_clk_open) {
         u32 now = 0;

@@ -18,7 +18,7 @@ endif()
 # the old target-wide define, kept at its last value: changing a target-wide
 # define recompiles the whole engine. Drop it at the next build that rebuilds
 # everything anyway.
-set(MPHNX_VERSION "switch-native6" CACHE STRING "Build label shown in logs and hbmenu")
+set(MPHNX_VERSION "switch-native6b" CACHE STRING "Build label shown in logs and hbmenu")
 set(MPHNX_ENGINE_TAG "switch-native5")
 set(MPHNX_TITLE "MPH-nx" CACHE STRING "Name shown in hbmenu")
 option(MPHNX_PIE_LIBS "Compile the runner's static libraries (game banks included) as -fPIE instead of -fPIC" ON)

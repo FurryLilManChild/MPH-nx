@@ -8,6 +8,7 @@ extern "C" {
 // CPU clock boost while the game runs. Restored on exit and on crash.
 void nx_clocks_apply(void);
 void nx_clocks_restore(void);
+void nx_clocks_set_boost(int on);
 const char* nx_clocks_status(void);
 
 // Direct Horizon input read for the frontend (touchscreen plus the buttons the

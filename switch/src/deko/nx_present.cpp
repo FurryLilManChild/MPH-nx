@@ -36,14 +36,16 @@ dk::Fence g_fence[kSlots];
 bool g_fence_used[kSlots];
 
 // Resolution scaler: render-size top screen composed by HdCompose.
-constexpr int kHiMaxW = 512, kHiMaxH = 384;
+constexpr int kHiMaxW = 1024, kHiMaxH = 768;
 constexpr uint32_t kHdLayerBytes = kDsW * kDsH * 8;     // RG32 pairs
 constexpr uint32_t kHdParamsBytes = 256;
 dk::Shader g_compose;
 bool g_compose_ok = false;
 dk::MemBlock g_hd_in_mem, g_hd_out_mem;
 uint32_t g_hd_in_off[kSlots], g_hd_out_off[kSlots];
-dk::Image g_hd_out_img[kSlots][2];  // 384x288 and 512x384 views of one buffer
+// views of one buffer per render size: 1.5x, 2x, 3x, 4x
+constexpr uint32_t kHdDims[4][2] = {{384, 288}, {512, 384}, {768, 576}, {1024, 768}};
+dk::Image g_hd_out_img[kSlots][4];
 
 struct HdParams {
     uint32_t out_w, out_h, bldcnt, eva, evb, evy, master_bright, prio3d, order3d,
@@ -239,8 +241,8 @@ bool nx_present_init()
             .create();
         for (int i = 0; i < kSlots; ++i) {
             g_hd_out_off[i] = i * out_slot;
-            const uint32_t dims[2][2] = {{384, 288}, {512, 384}};
-            for (int v = 0; v < 2; ++v) {
+            const auto& dims = kHdDims;
+            for (int v = 0; v < 4; ++v) {
                 dk::ImageLayout layout;
                 dk::ImageLayoutMaker{dev}
                     .setFlags(DkImageFlags_PitchLinear | DkImageFlags_Usage2DEngine)
@@ -300,8 +302,10 @@ void present_now(const NxPresentFrame& f)
     if (draw_bottom && !f.bottom_over_top)
         g_cmd.blitImage(bottom_view, {0, 0, 0, kDsW, kDsH, 1}, fb_view, rect(f.bottom_rect),
                         DkBlitFlag_FilterNearest);
-    const bool hd = f.hd && g_compose_ok && f.hd_top && f.hd_below && f.hi_addr &&
-                    ((f.hi_w == 384 && f.hi_h == 288) || (f.hi_w == 512 && f.hi_h == 384));
+    int hd_view_idx = -1;
+    for (int v = 0; v < 4; ++v)
+        if ((uint32_t)f.hi_w == kHdDims[v][0] && (uint32_t)f.hi_h == kHdDims[v][1]) hd_view_idx = v;
+    const bool hd = f.hd && g_compose_ok && f.hd_top && f.hd_below && f.hi_addr && hd_view_idx >= 0;
     if (hd) {
         uint8_t* in = static_cast<uint8_t*>(g_hd_in_mem.getCpuAddr()) + g_hd_in_off[slot];
         std::memcpy(in, f.hd_top, kHdLayerBytes);
@@ -327,7 +331,7 @@ void present_now(const NxPresentFrame& f)
         });
         g_cmd.dispatchCompute((uint32_t)(f.hi_w + 7) / 8, (uint32_t)(f.hi_h + 7) / 8, 1);
         g_cmd.barrier(DkBarrier_Full, DkInvalidateFlags_Image | DkInvalidateFlags_L2Cache);
-        dk::ImageView hd_view{g_hd_out_img[slot][f.hi_w == 512 ? 1 : 0]};
+        dk::ImageView hd_view{g_hd_out_img[slot][hd_view_idx]};
         g_cmd.blitImage(hd_view, {0, 0, 0, (uint32_t)f.hi_w, (uint32_t)f.hi_h, 1}, fb_view,
                         rect(f.top_rect), DkBlitFlag_FilterLinear);
     } else {
