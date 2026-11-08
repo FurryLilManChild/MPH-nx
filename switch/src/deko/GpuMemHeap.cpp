@@ -20,7 +20,13 @@ void GpuMemHeap::BlockListPushFront(Block*& head, Block* block)
 GpuMemHeap::Block* GpuMemHeap::BlockListPopFront(Block*& head)
 {
     Block* result = head;
-    assert(result && "popping from empty block list");
+    if (!result)
+    {
+        // asserts are compiled out in release; fail with a readable log line
+        fprintf(stderr, "[deko3d] GpuMemHeap: block pool exhausted\n");
+        fflush(stderr);
+        __builtin_trap();
+    }
 
     head = result->Next;
     if (head)
