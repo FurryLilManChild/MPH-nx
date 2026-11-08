@@ -2,6 +2,17 @@
 
 Newest first.
 
+## 2026-11-08: switch-native7 results, switch-native8 (event-driven card and DMA, VRAM copy-on-write, 3x/4x fix)
+
+- native7 on hardware: title and menus draw no 2D line on the main thread. In game one VRAM fence a frame still made the main thread draw 33 to 46 of 192 lines and wait 1.3 to 2.8 ms (roughly 15 to 25% of a 9 to 12 ms frame). Frames with card streaming ran 3,000 to 17,000 scheduler rounds (card fences up to 12,785 a frame) against about 1,000 without.
+- 3x crashed and 4x would have: the rasteriser put each variant's work count in the Z group count (the Maxwell limit is 65535) and binning had no bound on the work buffers. Work now goes in X, the work index is 21 bits (polygon index 11), work that does not fit is dropped, and 3x/4x get the same 16-layer budget as 2x (data heap 448 MB). The crash left no report because a GPU fault ends the process from outside.
+- native7 bug found on the way: a line job's view pointer was set to its snapshot and then overwritten with the live view, so queued lines read live views (VRAMCNT remaps without a fence could reach them). Fixed.
+- VRAM copy-on-write: a BG/OBJ write, or an LCDC write to a bank a queued line still reads through a view latched before a remap, copies that 16 KiB page, points the queued snapshots at the copy and waits only for lines a worker is inside (each worker publishes the job it is claiming). The cloud test's VRAM drains went from 172 to 33 (the rest are the capture bank), fence wait 46 ms to 23 ms, final frame identical.
+- Event-driven card: with the ARM9 owning the card, taking its IRQ and no card DMA armed, a card register read catches the card and the save chip up to the ARM9's live timestamp, so card polls no longer end the sync window. Timing is the faithful one. Speed test toggle Event-driven card.
+- A running DMA keeps the long sync window (was 64-cycle rounds for the whole transfer). Toggle Long DMA slices.
+- Per-round costs: DMA running state is a mask kept with the channels; the next timer overflow is cached (catch-up ticks do not move it) until a timer write or overflow.
+- Logs: the 2d line gives cow pages and fallbacks per frame and the physical pages copied; the fps line gives card catch-ups.
+
 ## 2026-11-08: switch-native6 results, native6b, switch-native7 (2D off the main thread)
 
 - native6 on hardware: gameplay emulation 7 to 10 ms a frame (native5b 10 to 14); ARM7 1.6% of the main thread (was 11%), scheduler and dispatch 6% (was 15%), idle 43%.

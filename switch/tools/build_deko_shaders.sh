@@ -49,7 +49,7 @@ _
 _S15 ScreenWidth=384;ScreenHeight=288;WorkTileMul=16
 _S2 ScreenWidth=512;ScreenHeight=384;WorkTileMul=16
 _S3 ScreenWidth=768;ScreenHeight=576;WorkTileMul=16
-_S4 ScreenWidth=1024;ScreenHeight=768;WorkTileMul=16
+_S4 ScreenWidth=1024;ScreenHeight=768;WorkTileMul=14
 '
 while read -r sfx sizes; do
   [ -n "$sfx" ] || continue

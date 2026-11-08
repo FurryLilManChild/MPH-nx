@@ -483,7 +483,7 @@ index 022a1af..8c31a75 100644
  #endif
      if (supported) {
 diff --git a/runner/src/frontend.cpp b/runner/src/frontend.cpp
-index 7d9d4eb..31cec19 100644
+index 7d9d4eb..77dcbcd 100644
 --- a/runner/src/frontend.cpp
 +++ b/runner/src/frontend.cpp
 @@ -4,6 +4,7 @@
@@ -506,7 +506,7 @@ index 7d9d4eb..31cec19 100644
  #include "gpu3d.h"
  #include "melonds_compute/TextureUpscale.h"
  #include "io.h"
-@@ -215,6 +221,70 @@ void observe_top_black_bands(const uint32_t* pixels, uint64_t frame,
+@@ -215,6 +221,76 @@ void observe_top_black_bands(const uint32_t* pixels, uint64_t frame,
  #include "recomp_runtime_ui.h"
  
  #include "frontend_latency.h"
@@ -546,6 +546,9 @@ index 7d9d4eb..31cec19 100644
 +extern unsigned long long g_nx_far_hits, g_nx_io_cont_count;
 +extern uint64_t g_nds_region_entries, g_nds_region_reference_steps;
 +}
++extern bool g_nx_card_catchup;   // MPH-nx native8 (io.cpp)
++extern unsigned long long g_nx_card_catchups;
++extern bool g_nx_dma_window;     // MPH-nx native8 (scheduler.cpp)
 +#if defined(MPHNX_DEKO3D)
 +extern bool g_nx_3d_steady;
 +#else
@@ -560,6 +563,8 @@ index 7d9d4eb..31cec19 100644
 +    {"nx.fence3d2", "3D status sync stop", "3D status reads end a long CPU slice. Off hung boot on Fastest in test11 and test12.", &g_nx_fence_3d, nullptr},
 +    {"nx.fencecard", "Card sync stop", "Game card register and data reads end a long CPU slice. Try off in large rooms.", &g_nx_fence_card, nullptr},
 +    {"nx.async2d", "Async 2D", "2D lines are drawn by worker threads from palette/OAM snapshots, and the emulation no longer waits for them at VBlank. Off: the old fenced behaviour.", &g_nx_2d_async, nullptr},
++    {"nx.cardcatch", "Event-driven card", "Card polls catch the card up to the game's own clock instead of ending the CPU slice (same timing, fewer scheduler rounds).", &g_nx_card_catchup, nullptr},
++    {"nx.dmawin", "Long DMA slices", "A running DMA keeps the long CPU slice instead of 64-cycle rounds for the whole transfer.", &g_nx_dma_window, nullptr},
 +    {"nx.3dsteady", "Steady 3D pacing", "Always show the last finished 3D frame (one frame of 3D delay) instead of alternating when the GPU runs late.", &g_nx_3d_steady, nullptr},
 +};
 +extern unsigned long long g_nx_divs, g_nx_rounds, g_nx_arm7_lead_rounds;
@@ -573,11 +578,12 @@ index 7d9d4eb..31cec19 100644
 +extern "C" { extern void (*g_nx_arm7_native_hook)(void); }  // MPH-nx native6 (scheduler.cpp)
 +extern "C" void nx_clocks_set_boost(int on);                 // MPH-nx (nx_platform.c)
 +void nds_gpu2d_async_stats(uint64_t* snaps, uint64_t* waits, uint64_t* vblanks);  // gpu2d.cpp
++void nds_gpu2d_cow_stats(uint64_t* pages, uint64_t* fallbacks, uint64_t* page_mask);
 +#endif
  
  namespace {
  
-@@ -815,6 +885,12 @@ bool sdl_init_frontend() {
+@@ -815,6 +891,12 @@ bool sdl_init_frontend() {
      return SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS |
                      SDL_INIT_GAMECONTROLLER);
  #else
@@ -590,7 +596,7 @@ index 7d9d4eb..31cec19 100644
      return SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS |
                      SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) == 0;
  #endif
-@@ -1185,6 +1261,163 @@ constexpr const char* kRuntimeMouseSensitivityKey =
+@@ -1185,6 +1267,164 @@ constexpr const char* kRuntimeMouseSensitivityKey =
  constexpr const char* kRuntimeResumeKey = "system.resume";
  constexpr const char* kRuntimeQuitKey = "system.quit";
  
@@ -743,8 +749,9 @@ index 7d9d4eb..31cec19 100644
 +    nx_clocks_set_boost(g_nx_cpu_boost);
 +    std::fprintf(stderr, "[mph-nx] ARM7 engine: %s\n",
 +                 g_nx_arm7_native_hook ? "native" : "old (banks and interpreter)");
-+    std::fprintf(stderr, "[mph-nx] speed tests: fastw=%u chain=%u iocont=%u fence3d=%d fencecard=%d steady3d=%d\n",
-+                 g_nx_fast_writes, g_nx_far_chain, g_nx_io_continue, g_nx_fence_3d ? 1 : 0, g_nx_fence_card ? 1 : 0, g_nx_3d_steady ? 1 : 0);
++    std::fprintf(stderr, "[mph-nx] speed tests: fastw=%u chain=%u iocont=%u fence3d=%d fencecard=%d steady3d=%d cardcatch=%d dmawin=%d\n",
++                 g_nx_fast_writes, g_nx_far_chain, g_nx_io_continue, g_nx_fence_3d ? 1 : 0, g_nx_fence_card ? 1 : 0, g_nx_3d_steady ? 1 : 0,
++                 g_nx_card_catchup ? 1 : 0, g_nx_dma_window ? 1 : 0);
 +    std::fprintf(stderr, "[mph-nx] settings loaded: layout=%s speed=%d fast_loading=%d cpu_sync=%s dispatch_cache=%s\n",
 +                 kNxLayoutNames[g_nx_layout], g_nx_show_speed ? 1 : 0, g_nx_fast_card ? 1 : 0,
 +                 kNxSyncNames[g_nx_sync], kNxCacheNames[g_nx_cache]);
@@ -754,7 +761,7 @@ index 7d9d4eb..31cec19 100644
  struct RuntimeMenuState {
      NdsFrontendOptions* options = nullptr;
      bool* running = nullptr;
-@@ -1235,6 +1468,30 @@ int runtime_menu_get_value(void* context, const RecompRuntimeUiItem* item,
+@@ -1235,6 +1475,30 @@ int runtime_menu_get_value(void* context, const RecompRuntimeUiItem* item,
                             int* value_out) {
      auto* state = static_cast<RuntimeMenuState*>(context);
      if (!state || !state->options || !item || !value_out) return 0;
@@ -785,7 +792,7 @@ index 7d9d4eb..31cec19 100644
      if (std::strcmp(item->key, kRuntimeMouseSensitivityKey) == 0) {
          *value_out = state->options->relative_mouse_sensitivity;
          return 1;
-@@ -1246,6 +1503,106 @@ int runtime_menu_set_value(void* context, const RecompRuntimeUiItem* item,
+@@ -1246,6 +1510,106 @@ int runtime_menu_set_value(void* context, const RecompRuntimeUiItem* item,
                             int value) {
      auto* state = static_cast<RuntimeMenuState*>(context);
      if (!state || !state->options || !item) return 0;
@@ -892,7 +899,7 @@ index 7d9d4eb..31cec19 100644
      if (std::strcmp(item->key, kRuntimeMouseSensitivityKey) == 0) {
          if (value < 10 || value > 400) return 0;
          state->options->relative_mouse_sensitivity =
-@@ -1267,6 +1624,17 @@ int runtime_menu_run_action(void* context, const RecompRuntimeUiItem* item) {
+@@ -1267,6 +1631,17 @@ int runtime_menu_run_action(void* context, const RecompRuntimeUiItem* item) {
          if (state->running) *state->running = false;
          return 1;
      }
@@ -910,7 +917,7 @@ index 7d9d4eb..31cec19 100644
      return 0;
  }
  
-@@ -1323,6 +1691,15 @@ bool runtime_menu_key_input(SDL_Scancode scancode,
+@@ -1323,6 +1698,15 @@ bool runtime_menu_key_input(SDL_Scancode scancode,
  bool runtime_menu_controller_input(SDL_GameControllerButton button,
                                     RecompRuntimeUiInput* input) {
      if (!input) return false;
@@ -926,7 +933,7 @@ index 7d9d4eb..31cec19 100644
      switch (button) {
          case SDL_CONTROLLER_BUTTON_START:
              *input = RECOMP_RUNTIME_UI_INPUT_TOGGLE;
-@@ -1456,6 +1833,49 @@ void destroy_presentation(FrontendPresentation& presentation) {
+@@ -1456,6 +1840,49 @@ void destroy_presentation(FrontendPresentation& presentation) {
      presentation.windows[1] = nullptr;
  }
  
@@ -976,7 +983,7 @@ index 7d9d4eb..31cec19 100644
  SDL_Renderer* create_renderer(SDL_Window* window) {
  #if defined(NDS_HAVE_SDL3)
      // Driver order is NOT left to SDL3's default here. SDL3 orders its Windows
-@@ -1518,6 +1938,16 @@ SDL_Window* create_window(const char* title, int x, int y, int w, int h,
+@@ -1518,6 +1945,16 @@ SDL_Window* create_window(const char* title, int x, int y, int w, int h,
          SDL_SetWindowPosition(window, x, y);
      return window;
  #else
@@ -993,7 +1000,7 @@ index 7d9d4eb..31cec19 100644
      return SDL_CreateWindow(title, x, y, w, h, static_cast<uint32_t>(flags));
  #endif
  }
-@@ -1778,6 +2208,18 @@ bool create_presentation(const NdsFrontendOptions& options,
+@@ -1778,6 +2215,18 @@ bool create_presentation(const NdsFrontendOptions& options,
      const int first_height = presentation.separate
          ? kScreenHeight * kWindowScale
          : kScreenHeight * 2 * kWindowScale;
@@ -1012,7 +1019,7 @@ index 7d9d4eb..31cec19 100644
      const uint64_t top_window_flags =
          SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI |
          (presentation.gl_top
-@@ -1891,15 +2333,23 @@ bool create_presentation(const NdsFrontendOptions& options,
+@@ -1891,15 +2340,23 @@ bool create_presentation(const NdsFrontendOptions& options,
              !presentation.separate && screen == 0
                  ? kScreenHeight * 2 : kScreenHeight;
          if (screen == 0 || presentation.separate) {
@@ -1037,7 +1044,7 @@ index 7d9d4eb..31cec19 100644
  #endif
          }
          presentation.textures[screen] = SDL_CreateTexture(
-@@ -2077,6 +2527,39 @@ struct OwnedPresentationFrame {
+@@ -2077,6 +2534,39 @@ struct OwnedPresentationFrame {
  };
  #endif
  
@@ -1077,7 +1084,7 @@ index 7d9d4eb..31cec19 100644
  PresentationTicks present_screens(FrontendPresentation& presentation,
                                    const uint32_t* top_pixels,
                                    int top_width,
-@@ -2141,8 +2624,72 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
+@@ -2141,8 +2631,72 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
  #endif
          return ticks;
      }
@@ -1150,7 +1157,7 @@ index 7d9d4eb..31cec19 100644
      uint64_t start = SDL_GetPerformanceCounter();
      SDL_UpdateTexture(presentation.textures[0], nullptr, top_pixels,
                        top_width * sizeof(uint32_t));
-@@ -2152,6 +2699,47 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
+@@ -2152,6 +2706,47 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
      if (!presentation.separate) {
          SDL_Renderer* renderer = presentation.renderers[0];
          start = SDL_GetPerformanceCounter();
@@ -1198,7 +1205,7 @@ index 7d9d4eb..31cec19 100644
          SDL_SetRenderDrawColor(renderer, 20, 20, 20, 255);
          SDL_RenderClear(renderer);
          const SDL_Rect top_rect{
-@@ -2169,6 +2757,9 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
+@@ -2169,6 +2764,9 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
                                  virtual_stylus_x, virtual_stylus_y);
          draw_savestate_notice(renderer, bottom_rect, savestate_notice);
          ticks.draw += SDL_GetPerformanceCounter() - start;
@@ -1208,7 +1215,7 @@ index 7d9d4eb..31cec19 100644
          start = SDL_GetPerformanceCounter();
          SDL_RenderPresent(renderer);
          ticks.swap += SDL_GetPerformanceCounter() - start;
-@@ -2446,6 +3037,19 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -2446,6 +3044,19 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
          options.virtual_stylus.enabled && !mph_prime_controls_available;
      MphPrimeBindingSet mph_prime_bindings{};
      MphPadBindingSet mph_pad_bindings{};
@@ -1228,7 +1235,7 @@ index 7d9d4eb..31cec19 100644
      if (mph_prime_controls_available) {
          mph_prime_bindings = make_mph_prime_bindings(options.mph_bindings);
          mph_pad_bindings = make_mph_pad_bindings(options.mph_pad_bindings);
-@@ -2543,6 +3147,80 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -2543,6 +3154,80 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
      runtime_menu_config.items = runtime_menu_items;
      runtime_menu_config.item_count =
          sizeof(runtime_menu_items) / sizeof(runtime_menu_items[0]);
@@ -1309,7 +1316,7 @@ index 7d9d4eb..31cec19 100644
      runtime_menu_config.callbacks.context = &runtime_menu_state;
      runtime_menu_config.callbacks.get_value = runtime_menu_get_value;
      runtime_menu_config.callbacks.set_value = runtime_menu_set_value;
-@@ -2552,6 +3230,10 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -2552,6 +3237,10 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
      runtime_menu_config.theme = "nds";
      runtime_menu_config.accept_label = "A / Enter";
      runtime_menu_config.back_label = "B / Backspace";
@@ -1320,7 +1327,7 @@ index 7d9d4eb..31cec19 100644
      RecompRuntimeUi* runtime_ui =
          recomp_runtime_ui_create(&runtime_menu_config);
      if (!runtime_ui) {
-@@ -2561,6 +3243,14 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -2561,6 +3250,14 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
      bool mouse_down = false;
      bool touch_release_pending = false;
      uint32_t touch_frames_held = 0;
@@ -1335,7 +1342,7 @@ index 7d9d4eb..31cec19 100644
      int64_t relative_delta_x = 0;
      int64_t relative_delta_y = 0;
      uint64_t relative_direct_writes = 0;
-@@ -3257,9 +3947,163 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3257,9 +3954,166 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                  relative_mouse_selftest_stage = 10;
              }
          }
@@ -1420,13 +1427,13 @@ index 7d9d4eb..31cec19 100644
 +                    uint64_t windows = 0, fences = 0;
 +                    scheduler_performance_window_counts(&windows, &fences);
 +                    static unsigned long long last_hits = 0, last_fills = 0;
-+                    std::fprintf(stderr, "[mph-nx] %s %.1f fps  sync=%s  cache=%s  link=%d  fast hits=%llu fills=%llu  windows=%llu fences=%llu  card words=%llu\n",
++                    std::fprintf(stderr, "[mph-nx] %s %.1f fps  sync=%s  cache=%s  link=%d  fast hits=%llu fills=%llu  windows=%llu fences=%llu  card words=%llu catchups=%llu\n",
 +                                 nx_now(), fps, kNxSyncNames[g_nx_sync], kNxCacheNames[g_nx_cache],
 +                                 g_nx_fast_dispatch ? 1 : 0,
 +                                 g_nx_fast_hits - last_hits, g_nx_fast_fills - last_fills,
 +                                 static_cast<unsigned long long>(windows - last_windows),
 +                                 static_cast<unsigned long long>(fences - last_fences),
-+                                 g_nx_fast_card_words);
++                                 g_nx_fast_card_words, g_nx_card_catchups);
 +                    {
 +                        static unsigned long long l_far = 0, l_ioc = 0, l_fc[8] = {};
 +                        static uint64_t l_reg = 0, l_ss = 0;
@@ -1453,8 +1460,10 @@ index 7d9d4eb..31cec19 100644
 +                            static NdsGpu2dProfile lg{};
 +                            uint64_t sn = 0, sw = 0, vb = 0;
 +                            nds_gpu2d_async_stats(&sn, &sw, &vb);
-+                            static uint64_t l_sn = 0, l_sw = 0;
-+                            std::fprintf(stderr, "[mph-nx] %s 2d per frame: lines %.0f main-thread %.0f wait %.2f ms  fences vram %.1f pal %.1f oam %.1f vramcnt %.1f frame %.1f present %.1f slots %.1f cap %.1f  snapshots %.1f snapwaits %.1f  async=%d\n",
++                            static uint64_t l_sn = 0, l_sw = 0, l_cp = 0, l_cf = 0;
++                            uint64_t cp = 0, cf = 0, cmask = 0;
++                            nds_gpu2d_cow_stats(&cp, &cf, &cmask);
++                            std::fprintf(stderr, "[mph-nx] %s 2d per frame: lines %.0f main-thread %.0f wait %.2f ms  fences vram %.1f pal %.1f oam %.1f vramcnt %.1f frame %.1f present %.1f slots %.1f cap %.1f  snapshots %.1f snapwaits %.1f  cow %.1f fallback %.1f pages %llx  async=%d\n",
 +                                         nx_now(), (g.threaded_lines - lg.threaded_lines) / fr,
 +                                         (g.fence_helped_lines - lg.fence_helped_lines) / fr,
 +                                         (g.fence_wait_ns - lg.fence_wait_ns) / fr / 1e6,
@@ -1462,8 +1471,9 @@ index 7d9d4eb..31cec19 100644
 +                                         (g.fence_drains[3] - lg.fence_drains[3]) / fr, (g.fence_drains[1] - lg.fence_drains[1]) / fr,
 +                                         (g.fence_drains[4] - lg.fence_drains[4]) / fr, (g.fence_drains[5] - lg.fence_drains[5]) / fr,
 +                                         (g.fence_drains[6] - lg.fence_drains[6]) / fr, (g.fence_drains[7] - lg.fence_drains[7]) / fr,
-+                                         (sn - l_sn) / fr, (sw - l_sw) / fr, g_nx_2d_async ? 1 : 0);
-+                            lg = g; l_sn = sn; l_sw = sw;
++                                         (sn - l_sn) / fr, (sw - l_sw) / fr, (cp - l_cp) / fr, (cf - l_cf) / fr,
++                                         (unsigned long long)cmask, g_nx_2d_async ? 1 : 0);
++                            lg = g; l_sn = sn; l_sw = sw; l_cp = cp; l_cf = cf;
 +                        }
 +                        l_far = g_nx_far_hits; l_ioc = g_nx_io_cont_count;
 +                        l_reg = g_nds_region_entries; l_ss = g_nds_region_reference_steps;
@@ -1499,7 +1509,7 @@ index 7d9d4eb..31cec19 100644
              if (event.type == SDL_QUIT) {
                  release_relative_mouse();
                  running = false;
-@@ -3451,6 +4295,13 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3451,6 +4305,13 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                  clear_virtual_stylus();
                  publish_keys();
              }
@@ -1513,7 +1523,7 @@ index 7d9d4eb..31cec19 100644
              if (event.type == SDL_CONTROLLERBUTTONDOWN ||
                  event.type == SDL_CONTROLLERBUTTONUP) {
                  RecompRuntimeUiInput menu_input{};
-@@ -3764,10 +4615,20 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3764,10 +4625,20 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                          publish_keys();
                      }
                  };
@@ -1534,7 +1544,7 @@ index 7d9d4eb..31cec19 100644
              }
  
              if (!menu_open && virtual_stylus_available) {
-@@ -3818,7 +4679,11 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3818,7 +4689,11 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                  }
              }
  
@@ -1547,7 +1557,7 @@ index 7d9d4eb..31cec19 100644
                  // Right stick -> camera aim; triggers act as bindable
                  // pseudo-buttons (defaults: RT shoot, LT scan-fire).
                  const float rx = SDL_GameControllerGetAxis(
-@@ -3989,6 +4854,85 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3989,6 +4864,85 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                      nds_set_touch(128, 96, true);
              }
          }
@@ -1633,7 +1643,7 @@ index 7d9d4eb..31cec19 100644
          if (options.custom_gamepad_bindings) {
              // Button events handle digital bindings; poll signed axes here.
              // Each row has one source, so clearing an axis row cannot release
-@@ -4186,8 +5130,9 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -4186,8 +5140,9 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                  presentation, blend_cache.blended[0].data(), top_width,
                  blend_cache.blended[1].data(), bottom_width,
                  runtime_ui,
@@ -1645,7 +1655,7 @@ index 7d9d4eb..31cec19 100644
                  savestate_notice.empty() ? nullptr : savestate_notice.c_str());
              if (!synthetic_ticks.ok) {
                  compute_failed = true;
-@@ -4210,14 +5155,18 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -4210,14 +5165,18 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
              presentation, top_pixels, top_width,
              bottom_pixels, bottom_width,
              runtime_ui,
@@ -1667,7 +1677,7 @@ index 7d9d4eb..31cec19 100644
          if (cpu_handoff) {
              if (producer_pending) {
 diff --git a/runner/src/gpu2d.cpp b/runner/src/gpu2d.cpp
-index c03b216..db7eddf 100644
+index c03b216..3cb4b13 100644
 --- a/runner/src/gpu2d.cpp
 +++ b/runner/src/gpu2d.cpp
 @@ -1642,6 +1642,19 @@ uint64_t ns_since(std::chrono::steady_clock::time_point a,
@@ -1676,7 +1686,7 @@ index c03b216..db7eddf 100644
  // latch -- are advanced here and nowhere else.
 +#if defined(__SWITCH__) || defined(MPHNX_HOST)
 +// MPH-nx native7: palette/OAM snapshots for queued lines (see gpu2d.h).
-+struct PoSnap { std::array<uint8_t, 0x800> pal{}, oam{}; NdsVramRendererView view[2]{}; uint16_t bank_mask = 0; uint64_t last_job = 0; };
++struct PoSnap { std::array<uint8_t, 0x800> pal{}, oam{}; NdsVramRendererView view[2]{}; uint16_t bank_mask = 0; uint64_t last_job = 0; uint64_t page_mask = 0; bool overlap = false; };
 +constexpr int kPoSnaps = 16;
 +PoSnap g_po_snap[kPoSnaps];
 +int g_po_cur = -1;
@@ -1690,7 +1700,7 @@ index c03b216..db7eddf 100644
  void latch_line(int y, LineJob& job) {
      const bool engine_a_on_top = (nds_powercontrol9() & 0x8000u) != 0;
      job.y = y;
-@@ -1654,6 +1667,13 @@ void latch_line(int y, LineJob& job) {
+@@ -1654,7 +1667,18 @@ void latch_line(int y, LineJob& job) {
          job.screen[e] = static_cast<uint32_t>(engine_a_on_top ? e : (e ^ 1));
          job.palette[e] = nds_vram_renderer_palette(e);
          job.oam[e] = nds_vram_renderer_oam(e);
@@ -1698,13 +1708,73 @@ index c03b216..db7eddf 100644
 +        if (g_po_use && g_po_cur >= 0) {
 +            if (job.palette[e]) job.palette[e] = g_po_snap[g_po_cur].pal.data() + e * 0x400u;
 +            if (job.oam[e]) job.oam[e] = g_po_snap[g_po_cur].oam.data() + e * 0x400u;
-+            job.vram[e] = &g_po_snap[g_po_cur].view[e];
 +        }
 +#endif
          job.vram[e] = nds_vram_renderer_view(e);
++#if defined(__SWITCH__) || defined(MPHNX_HOST)
++        // MPH-nx native8: queued lines read the views they were latched with
++        // (native7 set this before the live-view line above, which won).
++        if (g_po_use && g_po_cur >= 0) job.vram[e] = &g_po_snap[g_po_cur].view[e];
++#endif
      }
      job.engine_active[0] = !g_direct_frame_active;
-@@ -2079,7 +2099,33 @@ void submit_line(int y) {
+     job.engine_active[1] = true;
+@@ -1865,6 +1889,11 @@ struct Pool {
+     std::condition_variable done_cv;
+     std::vector<std::thread> threads;
+     std::vector<std::unique_ptr<LineScratch>> scratch;
++    // MPH-nx native8: the job each worker may be rendering (~0 when idle).
++    // Set before the claim, so it never runs ahead of the real index.
++    static constexpr unsigned kMaxWorkers = 8;
++    std::atomic<uint64_t> busy[kMaxWorkers];
++    Pool() { for (auto& b : busy) b.store(~0ull); }
+ };
+ 
+ std::unique_ptr<Pool> g_pool;
+@@ -1883,7 +1912,8 @@ uint32_t g_staged_bank_mask = 0;
+ // Next ring index whose staged capture has still to be applied.
+ uint64_t g_capture_apply_index = 0;
+ 
+-void worker_main(Pool* pool, LineScratch* sc) {
++void worker_main(Pool* pool, LineScratch* sc, unsigned wi) {
++    std::atomic<uint64_t>& busy = pool->busy[wi < Pool::kMaxWorkers ? wi : 0];
+     // Registered with the always-on host sampler so that emu-thread time spent
+     // WAITING on this pool is attributable to the pool's own host symbols
+     // rather than showing up as an unexplained gap in the emu profile
+@@ -1899,6 +1929,7 @@ void worker_main(Pool* pool, LineScratch* sc) {
+             uint64_t c = pool->claim.load(std::memory_order_acquire);
+             const uint64_t h = pool->head.load(std::memory_order_acquire);
+             if (c < h) {
++                busy.store(c, std::memory_order_seq_cst);
+                 if (pool->claim.compare_exchange_weak(
+                         c, c + 1, std::memory_order_acq_rel,
+                         std::memory_order_acquire)) {
+@@ -1908,6 +1939,7 @@ void worker_main(Pool* pool, LineScratch* sc) {
+                 }
+                 continue;
+             }
++            busy.store(~0ull, std::memory_order_seq_cst);
+             std::unique_lock<std::mutex> lock(pool->m);
+             if (pool->stop.load(std::memory_order_acquire)) return;
+             if (pool->claim.load(std::memory_order_acquire) >=
+@@ -1919,6 +1951,7 @@ void worker_main(Pool* pool, LineScratch* sc) {
+         }
+         if (!have) continue;
+         render_line_job(pool->jobs[index % kJobSlots], *sc);
++        busy.store(~0ull, std::memory_order_seq_cst);
+         pool->done.fetch_add(1, std::memory_order_acq_rel);
+         {
+             std::lock_guard<std::mutex> lock(pool->m);
+@@ -1973,7 +2006,7 @@ void start_pool() {
+     for (unsigned i = 0; i < n; ++i)
+         pool->scratch.push_back(std::make_unique<LineScratch>());
+     for (unsigned i = 0; i < n; ++i)
+-        pool->threads.emplace_back(worker_main, pool, pool->scratch[i].get());
++        pool->threads.emplace_back(worker_main, pool, pool->scratch[i].get(), i);
+ }
+ 
+ // Apply every staged capture up to (not including) `target`, in ring order.
+@@ -2079,7 +2112,44 @@ void submit_line(int y) {
          head = pool->head.load(std::memory_order_relaxed);
      }
      LineJob& job = pool->jobs[head % kJobSlots];
@@ -1723,6 +1793,17 @@ index c03b216..db7eddf 100644
 +            sn.view[0] = *nds_vram_renderer_view(0);
 +            sn.view[1] = *nds_vram_renderer_view(1);
 +            sn.bank_mask = nds_vram_2d_bank_mask();
++            sn.overlap = nds_vram_2d_overlap();
++            sn.page_mask = 0;
++            {
++                const uint8_t* base = nds_vram_base();
++                for (int e = 0; e < 2; ++e) {
++                    for (const uint8_t* p : sn.view[e].bg)
++                        if (p) sn.page_mask |= 1ull << ((p - base) >> 14);
++                    for (const uint8_t* p : sn.view[e].obj)
++                        if (p) sn.page_mask |= 1ull << ((p - base) >> 14);
++                }
++            }
 +            g_po_cur = next;
 +            g_po_gen_taken = g_nx_po_generation;
 +            ++g_po_snapshots;
@@ -1730,15 +1811,15 @@ index c03b216..db7eddf 100644
 +        g_po_snap[g_po_cur].last_job = head + 1;   // done counts finished jobs
 +        g_po_use = true;
 +    }
-     latch_line(y, job);
++    latch_line(y, job);
 +    g_po_use = false;
 +#else
-+    latch_line(y, job);
+     latch_line(y, job);
 +#endif
      if (line_reads_staged_bank(job)) {
          drain_pool(NDS_GPU2D_FENCE_CAPTURE);
          // The drain does not move head, so the reserved slot is still ours.
-@@ -2090,6 +2136,16 @@ void submit_line(int y) {
+@@ -2090,6 +2160,16 @@ void submit_line(int y) {
      // Publish under the mutex: a worker that has already evaluated its
      // predicate and is between that check and its wait would otherwise miss
      // the notification and sleep with work queued.
@@ -1755,7 +1836,7 @@ index c03b216..db7eddf 100644
      {
          std::lock_guard<std::mutex> lock(pool->m);
          pool->head.store(head + 1, std::memory_order_release);
-@@ -2098,6 +2154,9 @@ void submit_line(int y) {
+@@ -2098,6 +2178,9 @@ void submit_line(int y) {
      if (job.cap)
          nds_gpu2d_staged_captures.store(1u, std::memory_order_relaxed);
      ++g_threaded_lines;
@@ -1765,7 +1846,7 @@ index c03b216..db7eddf 100644
      pool->work_cv.notify_one();
  }
  
-@@ -2194,6 +2253,43 @@ const char* nds_gpu2d_fence_cause_name(uint32_t index) {
+@@ -2194,6 +2277,108 @@ const char* nds_gpu2d_fence_cause_name(uint32_t index) {
  }
  
  void nds_gpu2d_drain(uint32_t cause) { drain_pool(cause); }
@@ -1802,6 +1883,71 @@ index c03b216..db7eddf 100644
 +        if (sn.last_job > done && ((sn.bank_mask >> bank) & 1u)) return true;
 +    return false;
 +}
++// MPH-nx native8: VRAM copy-on-write.
++namespace {
++constexpr int kCowSlots = 32;
++struct CowSlot { std::array<uint8_t, 0x4000> data{}; uint64_t last_job = 0; bool used = false; };
++CowSlot g_cow[kCowSlots];
++uint64_t g_cow_pages = 0, g_cow_fallbacks = 0, g_cow_page_mask = 0;
++// Every job with index < n has finished rendering.
++bool jobs_done_below(Pool* pool, uint64_t n) {
++    if (pool->claim.load(std::memory_order_seq_cst) < n) return false;
++    for (unsigned w = 0; w < Pool::kMaxWorkers; ++w)
++        if (pool->busy[w].load(std::memory_order_seq_cst) < n) return false;
++    return true;
++}
++}
++bool nds_gpu2d_cow_page(const uint8_t* page) {
++    Pool* const pool = g_pool.get();
++    if (!pool) return false;
++    const unsigned p = static_cast<unsigned>((page - nds_vram_base()) >> 14);
++    if (p >= 64) return false;
++    uint32_t which = 0;
++    uint64_t last = 0;
++    bool overlap = false;
++    for (int i = 0; i < kPoSnaps; ++i) {
++        const PoSnap& sn = g_po_snap[i];
++        if (!sn.last_job || !((sn.page_mask >> p) & 1u)) continue;
++        if (jobs_done_below(pool, sn.last_job)) continue;   // last_job = index + 1
++        which |= 1u << i;
++        last = std::max(last, sn.last_job);
++        overlap |= sn.overlap;
++    }
++    if (!which) return true;
++    if (overlap) { ++g_cow_fallbacks; return false; }
++    CowSlot* slot = nullptr;
++    for (CowSlot& s : g_cow)
++        if (!s.used || jobs_done_below(pool, s.last_job)) { slot = &s; break; }
++    if (!slot) { ++g_cow_fallbacks; return false; }
++    const auto wait_start = std::chrono::steady_clock::now();
++    std::memcpy(slot->data.data(), page, 0x4000);
++    slot->used = true;
++    slot->last_job = last;
++    for (int i = 0; i < kPoSnaps; ++i) {
++        if (!((which >> i) & 1u)) continue;
++        PoSnap& sn = g_po_snap[i];
++        for (int e = 0; e < 2; ++e) {
++            for (const uint8_t*& q : sn.view[e].bg) if (q == page) q = slot->data.data();
++            for (const uint8_t*& q : sn.view[e].obj) if (q == page) q = slot->data.data();
++        }
++        sn.page_mask &= ~(1ull << p);
++    }
++    // Lines latched from now on take a fresh snapshot of the live views.
++    ++g_nx_po_generation;
++    // A worker that claims after this RMW sees the repointed views; one that
++    // claimed before it may hold an old pointer, so wait for those lines only.
++    const uint64_t c0 = pool->claim.fetch_add(0, std::memory_order_seq_cst);
++    for (unsigned w = 0; w < Pool::kMaxWorkers; ++w)
++        while (pool->busy[w].load(std::memory_order_seq_cst) < c0) std::this_thread::yield();
++    g_fence_wait_ns += ns_since(wait_start, std::chrono::steady_clock::now());
++    ++g_cow_pages;
++    g_cow_page_mask |= 1ull << p;
++    return true;
++}
++void nds_gpu2d_cow_stats(uint64_t* pages, uint64_t* fallbacks, uint64_t* page_mask) {
++    *pages = g_cow_pages; *fallbacks = g_cow_fallbacks; *page_mask = g_cow_page_mask;
++    g_cow_page_mask = 0;
++}
 +void nds_gpu2d_async_stats(uint64_t* snaps, uint64_t* waits, uint64_t* vblanks) {
 +    *snaps = g_po_snapshots; *waits = g_po_snap_waits; *vblanks = g_nx_vblank_skipped;
 +}
@@ -1809,7 +1955,7 @@ index c03b216..db7eddf 100644
  
  void nds_gpu2d_set_threaded(bool enabled, unsigned workers) {
      if (g_threaded_requested == enabled &&
-@@ -2447,6 +2543,11 @@ void nds_gpu2d_finish_frame(){
+@@ -2447,6 +2632,11 @@ void nds_gpu2d_finish_frame(){
      g_front ^= 1;
  }
  void nds_gpu2d_vblank(){
@@ -1822,10 +1968,10 @@ index c03b216..db7eddf 100644
      // melonDS Unit::VBlank: the capture enable bit auto-clears at line 192
      // only if it latched at line 0 this frame.
 diff --git a/runner/src/gpu2d.h b/runner/src/gpu2d.h
-index 991071a..b39a982 100644
+index 991071a..868afa4 100644
 --- a/runner/src/gpu2d.h
 +++ b/runner/src/gpu2d.h
-@@ -16,6 +16,18 @@
+@@ -16,6 +16,22 @@
  //
  // See docs/device_work_parallelization.md.
  extern std::atomic<uint32_t> nds_gpu2d_jobs_outstanding;
@@ -1840,6 +1986,10 @@ index 991071a..b39a982 100644
 +bool nds_gpu2d_lcdc_bank_used_by_2d(unsigned bank);  // that LCDC bank (A-D) is read or captured into
 +bool nds_gpu2d_lcdc_bank_read_by_2d(unsigned bank);  // read by display mode 2 or capture source B
 +bool nds_gpu2d_bank_in_flight(unsigned bank);        // a queued line reads that bank as BG/OBJ
++// MPH-nx native8: copy-on-write for a 16 KiB physical VRAM page that queued
++// lines still read. True: the write may go ahead without draining.
++bool nds_gpu2d_cow_page(const uint8_t* page);
++void nds_gpu2d_cow_stats(uint64_t* pages, uint64_t* fallbacks, uint64_t* page_mask);
 +#endif
  // Non-zero only while a display-capture line has been rendered but its write
  // into guest VRAM has not been applied yet. Guest READS of VRAM must fence on
@@ -1927,7 +2077,7 @@ index 56dbb80..2640c44 100644
  
      if (info.cpu_brand.empty()) info.cpu_brand = "unknown";
 diff --git a/runner/src/io.cpp b/runner/src/io.cpp
-index 20544a0..17b9a40 100644
+index 20544a0..9ac871f 100644
 --- a/runner/src/io.cpp
 +++ b/runner/src/io.cpp
 @@ -1,5 +1,6 @@
@@ -1984,7 +2134,49 @@ index 20544a0..17b9a40 100644
      g_sqrtcnt |= 0x8000u;
      g_sqrt_deadline = active_system_timestamp() + 13u;
      nds_reschedule_slice(g_sqrt_deadline);
-@@ -1676,6 +1702,23 @@ int active() { return (g_nds_active == NDS_ARM9) ? 0 : 1; }
+@@ -933,9 +959,21 @@ uint32_t dma_unit_cycles(int cpu, DmaChannel& d, uint32_t width) {
+     return first ? src.n + dst.n : src.s + dst.s;
+ }
+ 
++// MPH-nx native8: which channels are running, kept in step with d.running
++// (the scheduler asks this several times per round).
++uint8_t g_dma_run_mask[2] = {0, 0};
++void dma_mask_recompute() {
++    for (int c = 0; c < 2; ++c) {
++        g_dma_run_mask[c] = 0;
++        for (int ch = 0; ch < 4; ++ch) if (g_dma[c][ch].running) g_dma_run_mask[c] |= 1u << ch;
++    }
++}
++inline void dma_set_running(int cpu, int ch, bool on) {
++    g_dma[cpu][ch].running = on;
++    if (on) g_dma_run_mask[cpu] |= 1u << ch; else g_dma_run_mask[cpu] &= ~(1u << ch);
++}
+ bool dma_any_running(int cpu) {
+-    for (const auto& d : g_dma[cpu]) if (d.running) return true;
+-    return false;
++    return g_dma_run_mask[cpu] != 0;
+ }
+ 
+ void dma_trace_push(int cpu, int ch, const DmaChannel& d) {
+@@ -972,7 +1010,7 @@ void dma_start(int cpu, int ch) {
+     }
+     d.burst_index = 0;
+     d.burst_start = true;
+-    d.running = true;
++    dma_set_running(cpu, ch, true);
+     d.in_progress = true;
+     runtime_request_yield_poll();
+     if (!was_running) g_dma_entry_cycle[cpu] = g_runtime_cycles;
+@@ -1636,6 +1674,8 @@ void rtc_write(uint16_t val, bool byte) {
+ struct Timer { uint16_t reload, counter, ctrl; unsigned long long accum; };
+ Timer g_timer[2][4] = {};
+ unsigned long long g_timer_last[2] = {0, 0};
++bool g_tov_valid = false;      // MPH-nx native8: nds_next_timer_overflow_time cache
++uint64_t g_tov_cache = UINT64_MAX;
+ unsigned long long g_display_last = 0;
+ const uint32_t kPrescaler[4] = {1, 64, 256, 1024};
+ 
+@@ -1676,6 +1716,23 @@ int active() { return (g_nds_active == NDS_ARM9) ? 0 : 1; }
  
  // The AUXSPI backup-chip protocol itself lives in cart_backup.cpp so it can be
  // pinned by cart_backup_test; this only adds the write-through to disk.
@@ -2008,7 +2200,7 @@ index 20544a0..17b9a40 100644
  uint8_t cart_sram_spi_write(uint8_t val, uint32_t pos, bool last) {
      const uint8_t result =
          nds_cart_backup_spi_write(g_cart_backup, val, pos, last);
-@@ -1683,6 +1726,7 @@ uint8_t cart_sram_spi_write(uint8_t val, uint32_t pos, bool last) {
+@@ -1683,6 +1740,7 @@ uint8_t cart_sram_spi_write(uint8_t val, uint32_t pos, bool last) {
          nds_io_flush_cartridge_save();
      return result;
  }
@@ -2016,7 +2208,23 @@ index 20544a0..17b9a40 100644
  
  // IR-cartridge SPI front end (melonDS CartRetailIR::SPIWrite). Byte 0 of a
  // transfer is the IR command and answers 0; 0x00 passes the remainder through
-@@ -2012,6 +2056,20 @@ void nds_io_set_cartridge_save_path(const char* path) {
+@@ -1799,6 +1857,7 @@ void nds_io_reset() {
+     g_counts = {};
+     g_insn_count[0] = g_insn_count[1] = 0;
+     std::memset(g_dma, 0, sizeof(g_dma));
++    g_dma_run_mask[0] = g_dma_run_mask[1] = 0;
+     g_dma_entry_cycle[0] = g_dma_entry_cycle[1] = 0;
+     std::memset(g_spi_trace, 0, sizeof(g_spi_trace));
+     std::memset(g_irq_trace, 0, sizeof(g_irq_trace));
+@@ -1829,6 +1888,7 @@ void nds_io_reset() {
+     std::memset(g_sqrt_val, 0, sizeof(g_sqrt_val));
+     for (auto& cpu : g_timer) for (auto& t : cpu) t = Timer{};
+     g_timer_last[0] = g_timer_last[1] = 0;
++    g_tov_valid = false;
+     g_display_last = 0;
+     g_spicnt = 0; g_spi_resp = 0; g_spi_deadline = UINT64_MAX;
+     g_fw_hold = false; g_fw_cmd = 0; g_fw_status = 0;
+@@ -2012,6 +2072,20 @@ void nds_io_set_cartridge_save_path(const char* path) {
      g_cart_save_path = path ? path : "";
  }
  
@@ -2037,7 +2245,26 @@ index 20544a0..17b9a40 100644
  bool nds_io_flush_cartridge_save() {
      if (!g_cart_backup.dirty || g_cart_save_path.empty())
          return true;
-@@ -2241,6 +2299,34 @@ void nds_timer_debug_state(int cpu, NdsTimerDebugState out[4]) {
+@@ -2201,6 +2275,9 @@ uint64_t nds_next_system_event_time() {
+ }
+ 
+ uint64_t nds_next_timer_overflow_time() {
++    // MPH-nx native8: catch-up ticks leave a clock timer's overflow instant
++    // unchanged, so it is cached until a timer register write or an overflow.
++    if (g_tov_valid) return g_tov_cache;
+     // Timers are catch-up-ticked rather than deadline-scheduled, so the idle
+     // fast-forward needs their next overflow as an explicit deadline. Only
+     // clock-driven timers own a timeline position; a count-up (cascade) timer
+@@ -2218,6 +2295,8 @@ uint64_t nds_next_timer_overflow_time() {
+             best = std::min(best, when);
+         }
+     }
++    g_tov_cache = best;
++    g_tov_valid = true;
+     return best;
+ }
+ 
+@@ -2241,6 +2320,34 @@ void nds_timer_debug_state(int cpu, NdsTimerDebugState out[4]) {
      }
  }
  
@@ -2072,7 +2299,7 @@ index 20544a0..17b9a40 100644
  uint64_t nds_debug_spi_deadline() { return g_spi_deadline; }
  uint64_t nds_debug_card_deadline() { return g_card_deadline; }
  
-@@ -2263,32 +2349,7 @@ void nds_run_system_events(uint64_t timestamp) {
+@@ -2263,32 +2370,7 @@ void nds_run_system_events(uint64_t timestamp) {
          if (g_spicnt & 0x4000u)
              nds_raise_irq(1, 0x00800000u); // ARM7 IRQ_SPI
      }
@@ -2106,7 +2333,7 @@ index 20544a0..17b9a40 100644
      if (g_div_deadline <= timestamp) {
          g_div_deadline = UINT64_MAX;
          finish_div();
-@@ -2492,10 +2553,20 @@ void nds_tick_rtc(unsigned long long system_cycles) {
+@@ -2492,10 +2574,20 @@ void nds_tick_rtc(unsigned long long system_cycles) {
  }
  
  // ── Interrupt controller ────────────────────────────────────────────────
@@ -2127,7 +2354,16 @@ index 20544a0..17b9a40 100644
  }
  
  void nds_clear_irq(int cpu, uint32_t bits) {
-@@ -2957,7 +3028,14 @@ bool nds_dma_cpu_stalled(int cpu) { return dma_any_running(cpu & 1); }
+@@ -2710,6 +2802,8 @@ bool io_savestate_import(const NdsIoCoreSaveState& in, std::string* error) {
+ 
+     irq_recompute(0);
+     irq_recompute(1);
++    dma_mask_recompute();
++    g_tov_valid = false;
+     bus_fast_refresh();
+     return true;
+ }
+@@ -2957,7 +3051,14 @@ bool nds_dma_cpu_stalled(int cpu) { return dma_any_running(cpu & 1); }
  // GXFIFO ARM9 stall flag (melonDS CPUStop_GXStall). Set/cleared by the
  // vendored GPU3D via the NDS shim; scheduler consumption lands with the
  // geometry engine's Run() wiring (3D Phase 2).
@@ -2143,7 +2379,38 @@ index 20544a0..17b9a40 100644
  bool nds_gxfifo_stalled() { return g_gxfifo_stall; }
  
  unsigned long long nds_dma_entry_cycle(int cpu) {
-@@ -3240,8 +3318,51 @@ void nds_tick_timers(int cpu, unsigned long long cpu_cycles) {
+@@ -3067,11 +3168,11 @@ void nds_dma_run(int cpu, unsigned long long target_cycles) {
+                 // The card asserts a distinct DMA request for each 32-bit word.
+                 // Suspend this channel without completing or reloading it; the
+                 // next data-ready event resumes the pending transaction.
+-                d.running = false;
++                dma_set_running(cpu, ch, false);
+             } else if (gxfifo && request_units == 0u) {
+                 // Iteration exhausted: suspend and let the engine's FIFO-level
+                 // check re-request the next chunk (melonDS DMA::Run9 tail).
+-                d.running = false;
++                dma_set_running(cpu, ch, false);
+                 nds_gpu3d_check_fifo_dma();
+             }
+             continue;
+@@ -3087,7 +3188,7 @@ void nds_dma_run(int cpu, unsigned long long target_cycles) {
+             // or the native/ndsref counters silently drift apart.
+             ++g_counts.dma_done;
+         }
+-        d.running = false;
++        dma_set_running(cpu, ch, false);
+         d.in_progress = false;
+         brk_check();
+     }
+@@ -3232,6 +3333,7 @@ void nds_tick_timers(int cpu, unsigned long long cpu_cycles) {
+             unsigned long long extra = ticks / reload_span;
+             T.counter = static_cast<uint16_t>(T.reload + (ticks % reload_span));
+             carry = 1 + extra;                                 // overflows this round
++            g_tov_valid = false;
+             if (T.ctrl & 0x40u) {
+                 g_counts.timer_ovf += carry;
+                 nds_raise_irq(cpu, 1u << (3 + t));
+@@ -3240,11 +3342,79 @@ void nds_tick_timers(int cpu, unsigned long long cpu_cycles) {
      }
  }
  
@@ -2159,6 +2426,28 @@ index 20544a0..17b9a40 100644
 +    for (const auto& d : g_dma[0]) if ((d.cnt & 0x80000000u) && d.start_mode == 5u) return false;
 +    return true;
 +}
++// MPH-nx native8, event-driven card: the ARM9 owns the card, takes its IRQ and
++// has no card DMA armed, so nothing but its own polls observes the card's
++// progress. A poll catches the card (and the save chip) up to the ARM9's live
++// timestamp instead of ending the sync window so the scheduler can run the
++// event at the next rendezvous. Timing is the faithful one (a word is ready
++// once its deadline has passed), only the scheduler round per poll goes away.
++bool g_nx_card_catchup = true;
++unsigned long long g_nx_card_catchups = 0;
++static bool nx_card_catchup_ok(int cpu) {
++    if (!g_nx_native_build || !g_nx_card_catchup || cpu != 0 || g_card_irq_cpu != 0 || !card_owned_by(0))
++        return false;
++    for (const auto& d : g_dma[0]) if ((d.cnt & 0x80000000u) && d.start_mode == 5u) return false;
++    return true;
++}
++static void nx_card_catch_up() {
++    const uint64_t now = active_system_timestamp();
++    if (g_auxspi_deadline <= now) {
++        g_auxspi_deadline = UINT64_MAX;
++        g_auxspicnt &= ~0x0080u;
++    }
++    if (g_card_deadline <= now) { card_fire_event(); ++g_nx_card_catchups; }
++}
 +#endif
 +#if defined(__SWITCH__)
 +// Which ARM9 I/O accesses end a wide CPU-sync window. Faithful: all but the
@@ -2173,8 +2462,8 @@ index 20544a0..17b9a40 100644
 +// engine to the live ARM9 timestamp (melonDS GPU3D::Read32 0x600 -> Run()).
 +static inline int nx_io_fence_class(uint32_t addr) {
 +    if (g_nx_sync_nofence) return -1;
-+    if (addr >= 0x040001A0u && addr < 0x040001C0u && nx_native_card_pio(active())) return -1;
-+    if (addr >= 0x04100010u && addr < 0x04100014u && nx_native_card_pio(active())) return -1;
++    if (addr >= 0x040001A0u && addr < 0x040001C0u && (nx_native_card_pio(active()) || nx_card_catchup_ok(active()))) return -1;
++    if (addr >= 0x04100010u && addr < 0x04100014u && (nx_native_card_pio(active()) || nx_card_catchup_ok(active()))) return -1;
 +    if (!g_nx_fast_sched) return (addr >= 0x04000400u && addr < 0x040005CCu) ? -1 : 6;
 +    if (addr >= 0x04000180u && addr < 0x04000190u) return 0;  // IPC
 +    if (addr >= 0x04100000u && addr < 0x04100010u) return 1;  // IPC FIFO
@@ -2195,7 +2484,13 @@ index 20544a0..17b9a40 100644
      const int cpu = active();
      const uint32_t m = mask_for(width);
      if (card_register_address(addr) && !card_owned_by(cpu)) return 0;
-@@ -3346,6 +3467,38 @@ uint32_t nds_io_read(uint32_t addr, uint32_t width) {
++#if defined(__SWITCH__) || defined(MPHNX_HOST)
++    if (cpu == 0 && card_register_address(addr) && nx_card_catchup_ok(0)) nx_card_catch_up();
++#endif
+     if (cpu == 0 && gpu2d_reg_addr(addr))
+         return nds_gpu2d_read(addr, width) & m;
+     if (addr >= 0x04000130u && addr < 0x04000134u) {
+@@ -3346,6 +3516,38 @@ uint32_t nds_io_read(uint32_t addr, uint32_t width) {
              return addr == 0x040001A2u ? (auxspi_read_data() & m) : 0u;
          case 0x040001A4: case 0x040001A5:
          case 0x040001A6: case 0x040001A7:
@@ -2234,7 +2529,7 @@ index 20544a0..17b9a40 100644
              return (g_romctrl >> ((addr & 3u) * 8)) & m;
          case 0x04000184: case 0x04000185:  // IPCFIFOCNT
              return (fifocnt_read(cpu) >> ((addr & 1u) * 8)) & m;
-@@ -3366,6 +3519,23 @@ uint32_t nds_io_read(uint32_t addr, uint32_t width) {
+@@ -3366,6 +3568,23 @@ uint32_t nds_io_read(uint32_t addr, uint32_t width) {
                  word = card_response_word(g_card_transfer_pos);
                  g_romctrl &= ~0x00800000u;
                  g_card_transfer_pos += 4u;
@@ -2258,7 +2553,7 @@ index 20544a0..17b9a40 100644
                  if (g_card_transfer_pos < g_card_transfer_len) {
                      const uint32_t xfercycle =
                          (g_romctrl & 0x08000000u) ? 8u : 5u;
-@@ -3399,8 +3569,23 @@ uint32_t nds_io_read(uint32_t addr, uint32_t width) {
+@@ -3399,8 +3618,23 @@ uint32_t nds_io_read(uint32_t addr, uint32_t width) {
  }
  
  void nds_io_write(uint32_t addr, uint32_t value, uint32_t width) {
@@ -2282,6 +2577,14 @@ index 20544a0..17b9a40 100644
      if (card_register_address(addr) && !card_owned_by(cpu)) return;
      if (cpu == 0 && gpu2d_reg_addr(addr)) {
          nds_gpu2d_write(addr, value, width);
+@@ -3483,6 +3717,7 @@ void nds_io_write(uint32_t addr, uint32_t value, uint32_t width) {
+             T.ctrl = newctrl;
+             if (now_on && !was_on) { T.counter = T.reload; T.accum = 0; }
+         }
++        g_tov_valid = false;
+         return;
+     }
+     switch (addr) {
 diff --git a/runner/src/io.h b/runner/src/io.h
 index 9886382..f4d0de9 100644
 --- a/runner/src/io.h
@@ -2738,7 +3041,7 @@ index 0238a6a..805e91a 100644
      clear_dispatch_cache_all();
      // dispatch_epoch restarts at 1 on reset, so the per-CPU epoch alone
 diff --git a/runner/src/scheduler.cpp b/runner/src/scheduler.cpp
-index a52d8db..d16b489 100644
+index a52d8db..de511f3 100644
 --- a/runner/src/scheduler.cpp
 +++ b/runner/src/scheduler.cpp
 @@ -27,6 +27,12 @@
@@ -2754,7 +3057,7 @@ index a52d8db..d16b489 100644
  namespace {
  
  struct CpuSlot {
-@@ -84,6 +90,23 @@ constexpr int      kArm9ClockShift = 1;    // ARM9 runs at 2x the system clock
+@@ -84,6 +90,26 @@ constexpr int      kArm9ClockShift = 1;    // ARM9 runs at 2x the system clock
  bool performance_window_active=false;
  uint64_t performance_windows=0,performance_fences=0;
  constexpr uint64_t kIterCap        = 64;   // system cycles per outer iteration
@@ -2765,6 +3068,9 @@ index a52d8db..d16b489 100644
 +// still capped at the next scheduled event and timer overflow, and any ARM9
 +// I/O access other than a geometry command ends the slice at once.
 +uint64_t g_nx_sync_cap = 64;
++// MPH-nx native8: a running DMA keeps the long sync window instead of
++// dropping the scheduler to 64-cycle rounds for the whole transfer.
++bool g_nx_dma_window = true;
 +// MPH-nx fast scheduler (io.cpp). The SPU mixer and the RTC 32 kHz counter are
 +// absolute-timestamp catch-up devices with no mid-round observer that needs
 +// them exact, so with it on they no longer split rounds; they catch up at the
@@ -2778,7 +3084,7 @@ index a52d8db..d16b489 100644
  // Power-on periodic scheduler events in SYSTEM cycles. NextTarget scans RTC,
  // SPU and LCD even before their IRQs are enabled. They phase the 64-cycle CPU
  // rendezvous grid, so omitting a deadline can move an IPCSYNC write across the
-@@ -95,8 +118,13 @@ uint64_t next_scheduled_event_time() {
+@@ -95,8 +121,13 @@ uint64_t next_scheduled_event_time() {
      const uint64_t pos = g_sys_timestamp - line_base;
      const uint64_t lcd = (pos < kHblankStart) ? (line_base + kHblankStart)
                                                 : (line_base + kLine);
@@ -2793,7 +3099,7 @@ index a52d8db..d16b489 100644
  
      // RTC ScheduleTimer carries the 33,513,982/32,768 fractional remainder,
      // so deadline N is floor(N*33513982/32768), starting at N=1 (1022).
-@@ -218,6 +246,10 @@ void run_slice(int cpu, uint32_t quantum) {
+@@ -218,6 +249,10 @@ void run_slice(int cpu, uint32_t quantum) {
      nds_slice_begin(cap);
      if (nds_cpu_halted(cpu)) {
          nds_cpu_wake(cpu);
@@ -2804,7 +3110,7 @@ index a52d8db..d16b489 100644
          if (!(g_cpu.cpsr & CPSR_I_BIT) && nds_irq_pending(cpu))
              runtime_irq(g_cpu.R[15]);
      }
-@@ -234,6 +266,10 @@ void run_slice(int cpu, uint32_t quantum) {
+@@ -234,6 +269,10 @@ void run_slice(int cpu, uint32_t quantum) {
          nds_dispatch_tag(NDS_DISPATCH_CLASS_RESUME);
  #if defined(NDS_ARM9_DYNARMIC)
          if (!nds_arm9_native_run())
@@ -2815,7 +3121,7 @@ index a52d8db..d16b489 100644
  #endif
              runtime_dispatch(pc | t);
          // An exact-index stop reached in Tier 3 may have unwound through a
-@@ -342,6 +378,9 @@ void scheduler_set_cpu_boot(int cpu, uint32_t entry, uint32_t sp,
+@@ -342,6 +381,9 @@ void scheduler_set_cpu_boot(int cpu, uint32_t entry, uint32_t sp,
  
  void scheduler_run_round() {
      RoundActivityGuard round_activity;
@@ -2825,7 +3131,7 @@ index a52d8db..d16b489 100644
      // melonDS-faithful interleave (docs/scheduler_design.md, Commit A). Each
      // outer iteration is capped at kIterCap SYSTEM cycles (or the next scheduled
      // event, whichever is sooner). ARM9 runs FIRST up to its target and may
-@@ -390,10 +429,17 @@ void scheduler_run_round() {
+@@ -390,10 +432,17 @@ void scheduler_run_round() {
                                      : ProfileClock::time_point{};
      auto phase_start = round_start;
  
@@ -2837,14 +3143,14 @@ index a52d8db..d16b489 100644
 +#if defined(__SWITCH__)
 +    if (g_nx_sync_cap > quantum && g_slot[0].started && g_slot[1].started &&
 +        !nds_halt_wake_pending(0) && !nds_halt_wake_pending(1) &&
-+        !nds_dma_cpu_stalled(0) && !nds_dma_cpu_stalled(1) &&
++        (g_nx_dma_window || (!nds_dma_cpu_stalled(0) && !nds_dma_cpu_stalled(1))) &&
 +        !nds_gxfifo_stalled())
 +        quantum = g_nx_sync_cap;
 +#endif
      performance_window_active=quantum>kIterCap;
      if(performance_window_active)++performance_windows;
      struct WindowEnd {~WindowEnd(){performance_window_active=false;}} window_end;
-@@ -444,6 +490,46 @@ void scheduler_run_round() {
+@@ -444,6 +493,46 @@ void scheduler_run_round() {
      // normal 64-cycle cap (kIterationCycleMargin=8).
      if (ev < planned + 8u) planned = ev;
  
@@ -2891,7 +3197,7 @@ index a52d8db..d16b489 100644
      // ARM9 first, to its target in ARM9 cycles; do NOT clamp its overshoot.
      const uint64_t arm9_target = planned << kArm9ClockShift;
      if (sample) phase_start = ProfileClock::now();
-@@ -572,6 +658,15 @@ void scheduler_performance_io_fence() {
+@@ -572,6 +661,15 @@ void scheduler_performance_io_fence() {
          nds_reschedule_slice((g_runtime_cycles+1u)>>1u);
      }
  }
@@ -3053,7 +3359,7 @@ index 333067f..284921a 100644
  // top width so per-room sub-frusta and entity sphere culling cover the whole
  // band. `adaptive_width` must equal the host 3D render width.
 diff --git a/runner/src/vram.cpp b/runner/src/vram.cpp
-index ed90652..1883c16 100644
+index ed90652..16bf773 100644
 --- a/runner/src/vram.cpp
 +++ b/runner/src/vram.cpp
 @@ -5,6 +5,8 @@
@@ -3065,7 +3371,31 @@ index ed90652..1883c16 100644
  #include <string>
  
  #include "gpu2d.h"
-@@ -352,6 +354,9 @@ bool vram_savestate_import(const NdsVramSaveState& in,
+@@ -47,6 +49,7 @@ std::array<uint16_t, 8> g_texpal{};
+ std::array<uint16_t, 2> g_arm7{};
+ std::array<NdsVramRendererView, 2> g_renderer_view{};
+ uint64_t g_texture_generation = 1;
++bool g_2d_overlap = false;   // MPH-nx native8
+ 
+ const uint8_t* direct_chunk(uint16_t mask, uint32_t virtual_base) {
+     if (!mask || (mask & (mask - 1u))) return nullptr;
+@@ -56,6 +59,15 @@ const uint8_t* direct_chunk(uint16_t mask, uint32_t virtual_base) {
+ }
+ 
+ void refresh_renderer_views() {
++    {
++        bool ov = false;
++        auto multi = [](uint16_t m) { return m && (m & (m - 1u)); };
++        for (uint16_t m : g_abg) ov |= multi(m);
++        for (uint16_t m : g_aobj) ov |= multi(m);
++        for (uint16_t m : g_bbg) ov |= multi(m);
++        for (uint16_t m : g_bobj) ov |= multi(m);
++        g_2d_overlap = ov;
++    }
+     g_renderer_view = {};
+     for (uint32_t chunk = 0; chunk < 32; ++chunk)
+         g_renderer_view[0].bg[chunk] =
+@@ -352,6 +364,9 @@ bool vram_savestate_import(const NdsVramSaveState& in,
                g_vram_generation.begin());
      std::copy(in.palette.begin(), in.palette.end(), g_palette.begin());
      std::copy(in.oam.begin(), in.oam.end(), g_oam.begin());
@@ -3075,7 +3405,7 @@ index ed90652..1883c16 100644
  
      g_cnt.fill(0);
      g_lcdc = 0;
-@@ -381,6 +386,9 @@ void nds_vram_note_capture_write() { ++g_texture_generation; }
+@@ -381,6 +396,9 @@ void nds_vram_note_capture_write() { ++g_texture_generation; }
  void nds_vram_reset() {
      g_vram.fill(0); g_vram_written.fill(0); g_vram_generation.fill(0);
      g_palette.fill(0); g_oam.fill(0); g_cnt.fill(0);
@@ -3085,7 +3415,7 @@ index ed90652..1883c16 100644
      g_lcdc = 0; g_abg.fill(0); g_aobj.fill(0); g_bbg.fill(0); g_bobj.fill(0);
      g_abg_ext.fill(0); g_aobj_ext = 0; g_bbg_ext.fill(0); g_bobj_ext = 0;
      g_texture.fill(0); g_texpal.fill(0); g_arm7.fill(0);
-@@ -388,10 +396,60 @@ void nds_vram_reset() {
+@@ -388,10 +406,60 @@ void nds_vram_reset() {
      refresh_renderer_views();
  }
  
@@ -3146,7 +3476,7 @@ index ed90652..1883c16 100644
      // A remap rebuilds the flattened renderer views a worker dereferences.
      nds_gpu2d_memory_fence(NDS_GPU2D_FENCE_VRAMCNT);
      apply_map(bank, g_cnt[bank], false);
-@@ -510,6 +568,24 @@ void nds_video_write(int cpu, uint32_t addr, uint32_t value, uint32_t width) {
+@@ -510,6 +578,54 @@ void nds_video_write(int cpu, uint32_t addr, uint32_t value, uint32_t width) {
      addr &= ~(width - 1u);
      // Threaded scanline jobs read VRAM/palette/OAM live, so a guest write
      // to those regions must not overtake a line that was latched before it.
@@ -3161,8 +3491,38 @@ index ed90652..1883c16 100644
 +            const bool lcdc = (addr & 0x00E00000u) >= 0x00800000u;
 +            unsigned lbank = 9; uint32_t loff = 0;
 +            if (lcdc && !lcdc_bank(addr, lbank, loff)) lbank = 9;
-+            if (cpu != 7 && (!lcdc || nds_gpu2d_lcdc_bank_used_by_2d(lbank) ||
++            if (cpu != 7 && !lcdc && region == 0x06000000u) {
++                // MPH-nx native8: BG/OBJ write. Copy the page for the queued
++                // lines that still read it instead of waiting for them.
++                uint16_t mask = 0;
++                switch (addr & 0x00E00000u) {
++                    case 0x00000000u: mask = g_abg[(addr >> 14) & 31u]; break;
++                    case 0x00200000u: mask = g_bbg[(addr >> 14) & 7u]; break;
++                    case 0x00400000u: mask = g_aobj[(addr >> 14) & 15u]; break;
++                    default: mask = g_bobj[(addr >> 14) & 7u]; break;
++                }
++                if (mask && !(mask & (mask - 1u))) {
++                    const unsigned bank = std::countr_zero(static_cast<unsigned>(mask));
++                    const uint32_t phys = (kBankOffset[bank] + (addr & (kBankSize[bank] - 1u))) & ~0x3FFFu;
++                    if (!nds_gpu2d_cow_page(g_vram.data() + phys))
++                        nds_gpu2d_drain(NDS_GPU2D_FENCE_VRAM);
++                } else if (mask) {
++                    nds_gpu2d_drain(NDS_GPU2D_FENCE_VRAM);
++                }
++            } else if (cpu != 7 && lcdc && lbank < 9 && !nds_gpu2d_lcdc_bank_used_by_2d(lbank)) {
++                // MPH-nx native8: an LCDC write reaches queued lines only
++                // through views latched while the bank was BG/OBJ-mapped
++                // (a remap no longer fences): copy that page for them.
++                if ((g_lcdc & (1u << lbank)) && nds_gpu2d_bank_in_flight(lbank) &&
++                    !nds_gpu2d_cow_page(g_vram.data() + ((kBankOffset[lbank] + loff) & ~0x3FFFu)))
++                    nds_gpu2d_drain(NDS_GPU2D_FENCE_VRAM);
++            } else if (cpu != 7 && (!lcdc || nds_gpu2d_lcdc_bank_used_by_2d(lbank) ||
 +                             nds_gpu2d_bank_in_flight(lbank))) {
++#if defined(MPHNX_HOST)
++                if (std::getenv("NR_TRACE_VFENCE"))
++                    std::fprintf(stderr, "[vfence] %08X lcdc=%d bank=%u used=%d inflight=%d\n", addr, lcdc ? 1 : 0, lbank,
++                                 nds_gpu2d_lcdc_bank_used_by_2d(lbank) ? 1 : 0, nds_gpu2d_bank_in_flight(lbank) ? 1 : 0);
++#endif
 +                nds_gpu2d_drain(NDS_GPU2D_FENCE_VRAM);
 +            }
 +        }
@@ -3171,11 +3531,13 @@ index ed90652..1883c16 100644
      if (nds_gpu2d_jobs_outstanding.load(std::memory_order_relaxed) != 0u) {
          const uint32_t region = addr & 0xFF000000u;
          nds_gpu2d_drain(region == 0x05000000u ? NDS_GPU2D_FENCE_PALETTE
-@@ -566,6 +642,15 @@ uint32_t nds_vram_read_bg_extpal(int engine, uint32_t addr, uint32_t width) {
+@@ -566,6 +682,17 @@ uint32_t nds_vram_read_bg_extpal(int engine, uint32_t addr, uint32_t width) {
  uint32_t nds_vram_read_obj_extpal(int engine, uint32_t addr, uint32_t width) {
      return mapped_read(engine ? g_bobj_ext : g_aobj_ext, addr, width);
  }
 +const uint8_t* nds_vram_palette_live() { return g_palette.data(); }
++const uint8_t* nds_vram_base() { return g_vram.data(); }
++bool nds_vram_2d_overlap() { return g_2d_overlap; }
 +uint16_t nds_vram_2d_bank_mask() {
 +    uint16_t m = 0;
 +#if defined(__SWITCH__) || defined(MPHNX_HOST)
@@ -3188,16 +3550,18 @@ index ed90652..1883c16 100644
      engine &= 1;
      const uint16_t bit = engine ? 0x0200u : 0x0002u;
 diff --git a/runner/src/vram.h b/runner/src/vram.h
-index 942493b..2fb235c 100644
+index 942493b..ee35f8d 100644
 --- a/runner/src/vram.h
 +++ b/runner/src/vram.h
-@@ -34,6 +34,9 @@ uint32_t nds_vram_read_obj_extpal(int engine, uint32_t addr, uint32_t width);
+@@ -34,6 +34,11 @@ uint32_t nds_vram_read_obj_extpal(int engine, uint32_t addr, uint32_t width);
  // Direct physical palette/OAM views for the software renderer. These remain
  // power-gated and are only valid until the next device reset.
  const uint8_t* nds_vram_renderer_palette(int engine);
 +const uint8_t* nds_vram_palette_live();   // MPH-nx native7 snapshots
 +const uint8_t* nds_vram_oam_live();
 +uint16_t nds_vram_2d_bank_mask();          // banks mapped as BG/OBJ/ext palette
++const uint8_t* nds_vram_base();            // MPH-nx native8: physical VRAM (656 KiB)
++bool nds_vram_2d_overlap();                // a BG/OBJ chunk has more than one bank
  const uint8_t* nds_vram_renderer_oam(int engine);
  
  // Renderer-only flattened address views. A non-null chunk points directly at

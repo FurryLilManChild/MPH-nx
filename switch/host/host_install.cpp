@@ -10,6 +10,7 @@
 #include <cstring>
 #include <string>
 #include "gpu2d.h"
+void nds_gpu2d_cow_stats(uint64_t* pages, uint64_t* fallbacks, uint64_t* page_mask);
 extern "C" void nr_install(void);
 extern bool g_nx_fast_card;
 extern "C" uint32_t bus_read_u32_slow(uint32_t addr);
@@ -42,6 +43,10 @@ void gpu2d_stats_at_exit() {
     for (int i = 0; i < NDS_GPU2D_FENCE_CAUSE_COUNT && i < 8; ++i)
         std::fprintf(stderr, "[gpu2d]   fence %-8s drains %llu lines %llu\n", names[i],
                      (unsigned long long)p.fence_drains[i], (unsigned long long)p.fenced_lines[i]);
+    uint64_t cp = 0, cf = 0, cm = 0;
+    nds_gpu2d_cow_stats(&cp, &cf, &cm);
+    std::fprintf(stderr, "[gpu2d] cow pages %llu fallbacks %llu page mask %llx\n",
+                 (unsigned long long)cp, (unsigned long long)cf, (unsigned long long)cm);
 }
 void dump_at_exit() {
     gpu2d_stats_at_exit();
