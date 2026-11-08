@@ -191,7 +191,13 @@ GpuMemHeap::Allocation GpuMemHeap::Alloc(u32 size, u32 align)
     if (sl == 31 || secondFreeListBits == 0)
     {
         u32 firstFreeListBits = FirstFreeList & (0xFFFFFFFF << (fl - 5 + 1));
-        assert(firstFreeListBits && "out of memory :(");
+        if (!firstFreeListBits)
+        {
+            // asserts are compiled out in release; fail with a readable log line
+            fprintf(stderr, "[deko3d] GpuMemHeap: out of memory (%u bytes requested)\n", size);
+            fflush(stderr);
+            __builtin_trap();
+        }
 
         fl = __builtin_ctz(firstFreeListBits) + 5;
         secondFreeListBits = SecondFreeListBits[fl - 5];
