@@ -483,7 +483,7 @@ index 022a1af..8c31a75 100644
  #endif
      if (supported) {
 diff --git a/runner/src/frontend.cpp b/runner/src/frontend.cpp
-index 7d9d4eb..e9d9e14 100644
+index 7d9d4eb..a6e1379 100644
 --- a/runner/src/frontend.cpp
 +++ b/runner/src/frontend.cpp
 @@ -4,6 +4,7 @@
@@ -506,7 +506,7 @@ index 7d9d4eb..e9d9e14 100644
  #include "gpu3d.h"
  #include "melonds_compute/TextureUpscale.h"
  #include "io.h"
-@@ -215,6 +221,66 @@ void observe_top_black_bands(const uint32_t* pixels, uint64_t frame,
+@@ -215,6 +221,67 @@ void observe_top_black_bands(const uint32_t* pixels, uint64_t frame,
  #include "recomp_runtime_ui.h"
  
  #include "frontend_latency.h"
@@ -569,11 +569,12 @@ index 7d9d4eb..e9d9e14 100644
 +#endif
 +void nx_set_fast_dispatch(bool on);
 +void scheduler_performance_window_counts(uint64_t* windows, uint64_t* fences);
++extern "C" { extern void (*g_nx_arm7_native_hook)(void); }  // MPH-nx native6 (scheduler.cpp)
 +#endif
  
  namespace {
  
-@@ -815,6 +881,12 @@ bool sdl_init_frontend() {
+@@ -815,6 +882,12 @@ bool sdl_init_frontend() {
      return SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS |
                      SDL_INIT_GAMECONTROLLER);
  #else
@@ -586,7 +587,7 @@ index 7d9d4eb..e9d9e14 100644
      return SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS |
                      SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) == 0;
  #endif
-@@ -1185,6 +1257,158 @@ constexpr const char* kRuntimeMouseSensitivityKey =
+@@ -1185,6 +1258,157 @@ constexpr const char* kRuntimeMouseSensitivityKey =
  constexpr const char* kRuntimeResumeKey = "system.resume";
  constexpr const char* kRuntimeQuitKey = "system.quit";
  
@@ -679,7 +680,6 @@ index 7d9d4eb..e9d9e14 100644
 +// Read at boot only: the native ARM7 keeps its call stack on its own host
 +// stack, so the engine cannot change under a running game.
 +bool g_nx_arm7_native = true;
-+extern "C" { extern void (*g_nx_arm7_native_hook)(void); }
 +
 +void nx_save_settings(const NdsFrontendOptions& options) {
 +    FILE* f = std::fopen(kNxSettingsPath, "w");
