@@ -38,7 +38,8 @@ public:
     //dk::Fence FrameReserveFence = {};
 private:
     // MPH-nx resolution scaler: one shader set per render size
-    // (0: 256x192, 1: 384x288 (1.5x), 2: 512x384 (2x)).
+    // (0: 256x192, 1: 384x288 (1.5x), 2: 512x384 (2x), 3: 768x576 (3x),
+    // 4: 1024x768 (4x)).
     struct ShaderSet
     {
         dk::Shader ShaderInterpXSpans[2];
@@ -60,9 +61,12 @@ private:
         dk::Shader ShaderDownsample;
     };
     ShaderSet Sets[5];
+    bool SetLoaded[5] = {};
     ShaderSet* S = &Sets[0];
+    bool LoadSet(int si, const char* sfx);
+    bool InitRest();
 public:
-    // Requested scale index; applied at the next frame (0, 1 or 2).
+    // Requested scale index (0 to 4); applied at the next frame.
     int RequestedScale = 0;
     int CurScale = 0;
     int ScrW = 256, ScrH = 192;

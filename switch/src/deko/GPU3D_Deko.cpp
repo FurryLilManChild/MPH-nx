@@ -7,6 +7,7 @@
 #include "nx_deko.h"
 
 #include <assert.h>
+#include <cstdio>
 #include <string>
 #include <switch.h>
 
@@ -63,10 +64,26 @@ bool DekoRenderer::Init()
     YSpanIndicesTexture.initialize(yspanIndicesLayout, NxDeko::TextureHeap->MemBlock, YSpanIndicesTextureMemory.Offset);
 
     static const char* const kSuffix[5] = {"", "_S15", "_S2", "_S3", "_S4"};
-    for (int si = 0; si < 3; si++)
+    // MPH-nx: every scale set (1x to 4x). Sets 0 to 2 are required; 3x and
+    // 4x are optional, and a size whose set did not load is never selected.
+    for (int si = 0; si < 5; si++)
+    {
+        if (!LoadSet(si, kSuffix[si]))
+        {
+            if (si < 3) return false;
+            std::fprintf(stderr, "[deko] shader set %s did not load; that size stays off\n", kSuffix[si]);
+            continue;
+        }
+        SetLoaded[si] = true;
+    }
+    S = &Sets[0];
+    return InitRest();
+}
+
+bool DekoRenderer::LoadSet(int si, const char* sfx)
+{
     {
         ShaderSet& set = Sets[si];
-        const char* sfx = kSuffix[si];
         if (!NxDeko::LoadShader((std::string("InterpXSpansZBuffer") + sfx).c_str(), set.ShaderInterpXSpans[0])) return false;
         if (!NxDeko::LoadShader((std::string("InterpXSpansWBuffer") + sfx).c_str(), set.ShaderInterpXSpans[1])) return false;
         if (!NxDeko::LoadShader((std::string("BinCombined") + sfx).c_str(), set.ShaderBinCombined)) return false;
@@ -102,7 +119,11 @@ bool DekoRenderer::Init()
         if (!NxDeko::LoadShader((std::string("FinalPassEdgeFogAA") + sfx).c_str(), set.ShaderFinalPass[7])) return false;
         if (si > 0 && !NxDeko::LoadShader((std::string("Downsample") + sfx).c_str(), set.ShaderDownsample)) return false;
     }
-    S = &Sets[0];
+    return true;
+}
+
+bool DekoRenderer::InitRest()
+{
 
     {
         ImageDescriptors = NxDeko::DataHeap->Alloc(sizeof(dk::ImageDescriptor)*descriptorOffset_Count, DK_IMAGE_DESCRIPTOR_ALIGNMENT);
@@ -1502,7 +1523,9 @@ void DekoRenderer::RenderFrame(GPU& gpu)
 void DekoRenderer::ApplyScale()
 {
     if (RequestedScale == CurScale) return;
-    CurScale = (RequestedScale >= 0 && RequestedScale <= 4) ? RequestedScale : 0;
+    const int want = (RequestedScale >= 0 && RequestedScale <= 4) ? RequestedScale : 0;
+    if (!SetLoaded[want]) return;   // that size's shaders are missing: keep the current one
+    CurScale = want;
     S = &Sets[CurScale];
     static const int kW[5] = {256, 384, 512, 768, 1024}, kH[5] = {192, 288, 384, 576, 768};
     ScrW = kW[CurScale];
