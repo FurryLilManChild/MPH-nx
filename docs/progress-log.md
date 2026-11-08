@@ -2,6 +2,13 @@
 
 Newest first.
 
+## 2026-11-08: switch-native6 results, native6b, switch-native7 (2D off the main thread)
+
+- native6 on hardware: gameplay emulation 7 to 10 ms a frame (native5b 10 to 14); ARM7 1.6% of the main thread (was 11%), scheduler and dispatch 6% (was 15%), idle 43%.
+- native6b: port menu Speed > CPU clock (stock 1020 MHz or boost 1785 MHz; every build so far boosted the CPU only) and 3x/4x resolution (shader sets _S3/_S4, renderer buffers sized for 1024x768, data heap 352 MB).
+- native7: the main thread mostly drew 2D lines because it had to wait for the workers: a drain at VBlank, a drain on every VRAMCNT remap (MPH flips banks C and D between engine B BG/OBJ and LCDC each frame) and on LCDC writes (texture uploads). Queued lines now read palette, OAM and the BG/OBJ views from snapshots taken at latch time; VBlank no longer drains; LCDC writes fence only for banks a queued line or the display/capture reads; remaps that touch only BG/OBJ rebuild views without a fence. Speed test toggle Async 2D. Cloud test: lines drawn by the main thread 172k to about 5k, fence wait 1.1 s to 0.04 s, final frame identical to native6, card commands match.
+- Also: scaler layer pass gets 2 helper threads (NDS_GPU2D_ADAPTIVE_WORKERS); the GX command cache reuses its buffers and compares the raw words it hands out (native stores do not bump page generations); host test now compiles gpu2d, vram and gpu3d with the MPH-nx paths.
+
 ## 2026-11-08: switch-native5b results, switch-native6 (native ARM7)
 
 - native5 crashed at launch: the deko3d shader code heap's block pool (64) ran out with 102 shaders (three render-size sets). native5b: pools raised to 1024; pool exhaustion now logs before it traps.

@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include "gpu2d.h"
 extern "C" void nr_install(void);
 extern bool g_nx_fast_card;
 extern "C" uint32_t bus_read_u32_slow(uint32_t addr);
@@ -31,7 +32,19 @@ void shot_at_exit() {
     }
     std::fclose(o);
 }
+void gpu2d_stats_at_exit() {
+    NdsGpu2dProfile p{};
+    nds_gpu2d_profile(&p);
+    static const char* names[] = {"vram", "vramcnt", "palette", "oam", "frame", "present", "slots", "capture"};
+    std::fprintf(stderr, "[gpu2d] threaded %llu inline %llu helped %llu wait %.1f ms\n",
+                 (unsigned long long)p.threaded_lines, (unsigned long long)p.inline_lines,
+                 (unsigned long long)p.fence_helped_lines, p.fence_wait_ns / 1e6);
+    for (int i = 0; i < NDS_GPU2D_FENCE_CAUSE_COUNT && i < 8; ++i)
+        std::fprintf(stderr, "[gpu2d]   fence %-8s drains %llu lines %llu\n", names[i],
+                     (unsigned long long)p.fence_drains[i], (unsigned long long)p.fenced_lines[i]);
+}
 void dump_at_exit() {
+    gpu2d_stats_at_exit();
     shot_at_exit();
     const char* d = std::getenv("NR_DUMP");
     if (!d) return;

@@ -541,6 +541,9 @@ int main(int argc, char** argv) {
         (void)flat;
         nr_install();
         add("--execution-model"); add("faithful");   // the ARM7 path; the ARM9 is native
+        // native7: two helper threads for the scaler's per-frame layer pass
+        // (upstream sizes this from hardware_concurrency, which is 0 here).
+        setenv("NDS_GPU2D_ADAPTIVE_WORKERS", "2", 0);
         std::printf("[mph-nx] game code: native (USA Rev 1)\n");
 #else
         add("--execution-model"); add(flat ? "performance" : "faithful");

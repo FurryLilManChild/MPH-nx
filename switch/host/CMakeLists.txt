@@ -36,6 +36,9 @@ set_source_files_properties(
     "${NDSRECOMP_ROOT}/runner/src/runtime_arm.cpp"
     "${NDSRECOMP_ROOT}/runner/src/io.cpp"
     "${NDSRECOMP_ROOT}/runner/src/tier3.cpp"
+    "${NDSRECOMP_ROOT}/runner/src/gpu2d.cpp"
+    "${NDSRECOMP_ROOT}/runner/src/vram.cpp"
+    "${NDSRECOMP_ROOT}/runner/src/gpu3d.cpp"
     DIRECTORY "${NDSRECOMP_ROOT}/runner"
     PROPERTIES COMPILE_DEFINITIONS "MPHNX_HOST=1")
 
