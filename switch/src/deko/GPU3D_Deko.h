@@ -217,7 +217,7 @@ private:
 
     // Work tiles (polygon x tile pairs): each shader set uses at most
     // TilesPerLine*TileLines*WorkTileMul of them (build_deko_shaders.sh).
-    static const int MaxWorkTiles = 128*96*8;
+    static const int MaxWorkTiles = 128*96*16;
     static const int MaxVariants = 256;
 
     struct BinResult

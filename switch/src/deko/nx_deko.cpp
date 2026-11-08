@@ -52,7 +52,7 @@ bool Init()
     TextureHeap.emplace(Device, 1024 * 1024 * 128, DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image, 1024 * 8);
     ShaderCodeHeap.emplace(Device, 1024 * 1024 * 16,
         DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached | DkMemBlockFlags_Code, 1024);
-    DataHeap.emplace(Device, 1024 * 1024 * 352,  // 4x scaler buffers: about 220 MB in use
+    DataHeap.emplace(Device, 1024 * 1024 * 448,  // 3x/4x scaler buffers: about 300 MB in use
         DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached, 1024);
     // CPU-cached: the 2D compositor reads the 3D output line by line, and
     // uncached reads cost about 2% of the emulation thread (native4 profile).

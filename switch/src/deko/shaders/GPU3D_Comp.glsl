@@ -730,7 +730,8 @@ layout (local_size_x = 32) in;
 
 void main()
 {
-    VariantWorkCount[gl_GlobalInvocationID.x] = uvec4(1, 1, 0, 0);
+    // MPH-nx: work items go in the X group count (Maxwell caps Z at 65535)
+    VariantWorkCount[gl_GlobalInvocationID.x] = uvec4(0, 1, 1, 0);
 }
 
 #endif
@@ -812,6 +813,21 @@ void main()
 
     int linearTile = fineTile.x + fineTile.y * TilesPerLine + coarseTile.x * CoarseTileCountX + coarseTile.y * TilesPerLine * CoarseTileCountY;
 
+    // MPH-nx: never write past the work buffers. A tile whose work does not
+    // fit is dropped (its range is marked empty for SortWork).
+    uint workOffset = 0U;
+    if (binnedMask != 0U)
+    {
+        uint cnt = uint(bitCount(binnedMask));
+        workOffset = atomicAdd(VariantWorkCount[0].w, cnt);
+        if (workOffset + cnt > uint(MaxWorkTiles))
+        {
+            for (uint i = workOffset; i < uint(MaxWorkTiles); i++)
+                UnsortedWorkDescs[i] = uvec2(0xFFFFFFFFU);
+            binnedMask = 0U;
+        }
+    }
+
     BinnedMask[linearTile * BinStride + groupIdx] = binnedMask;
     int coarseMaskIdx = linearTile * CoarseBinStride + (groupIdx >> 5);
     if (binnedMask != 0U)
@@ -819,7 +835,6 @@ void main()
 
     if (binnedMask != 0U)
     {
-        uint workOffset = atomicAdd(VariantWorkCount[0].w, uint(bitCount(binnedMask)));
         WorkOffsets[linearTile * BinStride + groupIdx] = workOffset;
 
         uint tilePositionCombined = bitfieldInsert(fineTileTopLeft.x, fineTileTopLeft.y, 16, 16);
@@ -833,8 +848,8 @@ void main()
             int polygonIdx = groupIdx * 32 + bit;
             int variantIdx = Polygons[polygonIdx].Variant;
 
-            int inVariantOffset = int(atomicAdd(VariantWorkCount[variantIdx].z, 1));
-            UnsortedWorkDescs[workOffset + idx] = uvec2(tilePositionCombined, bitfieldInsert(inVariantOffset, polygonIdx, 16, 16));
+            int inVariantOffset = int(atomicAdd(VariantWorkCount[variantIdx].x, 1));
+            UnsortedWorkDescs[workOffset + idx] = uvec2(tilePositionCombined, bitfieldInsert(uint(inVariantOffset), uint(polygonIdx), 21, 11));
 
             idx++;
         }
@@ -854,9 +869,9 @@ void main()
         if (gl_GlobalInvocationID.x == 0)
         {
             // a bit of a cheat putting this here, but this shader won't run that often
-            SortWorkWorkCount = uvec4((VariantWorkCount[0].w + 31) / 32, 1, 1, 0);
+            SortWorkWorkCount = uvec4((min(VariantWorkCount[0].w, uint(MaxWorkTiles)) + 31) / 32, 1, 1, 0);
         }
-        SortedWorkOffset[gl_GlobalInvocationID.x] = atomicAdd(VariantWorkCount[1].w, VariantWorkCount[gl_GlobalInvocationID.x].z);
+        SortedWorkOffset[gl_GlobalInvocationID.x] = atomicAdd(VariantWorkCount[1].w, VariantWorkCount[gl_GlobalInvocationID.x].x);
     }
 }
 
@@ -868,15 +883,17 @@ layout (local_size_x = 32) in;
 
 void main()
 {
-    if (gl_GlobalInvocationID.x < VariantWorkCount[0].w)
+    if (gl_GlobalInvocationID.x < min(VariantWorkCount[0].w, uint(MaxWorkTiles)))
     {
         uvec2 workDesc = UnsortedWorkDescs[gl_GlobalInvocationID.x];
-        int inVariantOffset = int(bitfieldExtract(workDesc.y, 0, 16));
-        int polygonIdx = int(bitfieldExtract(workDesc.y, 16, 16));
+        if (workDesc.y == 0xFFFFFFFFU)
+            return;   // dropped (work buffer full)
+        int inVariantOffset = int(bitfieldExtract(workDesc.y, 0, 21));
+        int polygonIdx = int(bitfieldExtract(workDesc.y, 21, 11));
         int variantIdx = Polygons[polygonIdx].Variant;
 
         int sortedIndex = int(SortedWorkOffset[variantIdx]) + inVariantOffset;
-        SortedWork[sortedIndex] = uvec2(workDesc.x, bitfieldInsert(workDesc.y, gl_GlobalInvocationID.x, 0, 16));
+        SortedWork[sortedIndex] = uvec2(workDesc.x, bitfieldInsert(workDesc.y, gl_GlobalInvocationID.x, 0, 21));
     }
 }
 
@@ -890,10 +907,10 @@ layout (binding = 0) uniform usampler2DArray CurrentTexture;
 
 void main()
 {
-    uvec2 workDesc = SortedWork[SortedWorkOffset[CurVariant] + gl_WorkGroupID.z];
-    Polygon polygon = Polygons[bitfieldExtract(workDesc.y, 16, 16)];
+    uvec2 workDesc = SortedWork[SortedWorkOffset[CurVariant] + gl_WorkGroupID.x];
+    Polygon polygon = Polygons[bitfieldExtract(workDesc.y, 21, 11)];
     ivec2 position = ivec2(bitfieldExtract(workDesc.x, 0, 16), bitfieldExtract(workDesc.x, 16, 16)) + ivec2(gl_LocalInvocationID.xy);
-    int tileOffset = int(bitfieldExtract(workDesc.y, 0, 16)) * TileSize * TileSize + TileSize * int(gl_LocalInvocationID.y) + int(gl_LocalInvocationID.x);
+    int tileOffset = int(bitfieldExtract(workDesc.y, 0, 21)) * TileSize * TileSize + TileSize * int(gl_LocalInvocationID.y) + int(gl_LocalInvocationID.x);
 
     uint color = 0U;
     if (position.y >= polygon.YTop && position.y < polygon.YBot)
