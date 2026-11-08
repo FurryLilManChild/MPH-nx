@@ -91,6 +91,38 @@ class Rom:
     def arm7(self):
         return self.data[self.arm7_off:self.arm7_off + self.arm7_size]
 
+    def arm7_segments(self):
+        """[(name, load_addr, bytes)]: the ARM7 startup code, plus the sections
+        it copies into WRAM and main RAM before jumping to the program. The
+        copy table pointer is the literal the startup code's copy routine
+        loads (NitroSDK crt0: entry, then BL autoload; the table holds
+        start/end of a {dest, size, bss} list and the source address)."""
+        img = self.arm7()
+        base = self.arm7_load
+        u = lambda a: u32(img, a - base)
+        # crt0's autoload routine is the first BL target; its first instruction
+        # is LDR r0, [pc, #imm] naming the table descriptor.
+        bl = None
+        for o in range(0, 0x100, 4):
+            w = u32(img, o)
+            if (w & 0xFF000000) == 0xEB000000:
+                off = ((w & 0xFFFFFF) ^ 0x800000) - 0x800000
+                bl = base + o + 8 + off * 4
+                break
+        if bl is None: return [('main', base, img)]
+        w = u(bl)
+        if (w & 0xFFFFF000) != 0xE59F0000: return [('main', base, img)]
+        desc = u(bl + 8 + (w & 0xFFF))
+        start, end, src = u(desc), u(desc + 4), u(desc + 8)
+        segs = [('crt0', base, img[:src - base])]
+        o = start
+        while o < end:
+            dest, size = u(o), u(o + 4)
+            name = 'wram' if dest >= 0x03000000 else 'main'
+            segs.append((name, dest, img[src - base:src - base + size]))
+            src += size; o += 12
+        return segs
+
     def overlays9(self):
         out = []
         for i in range(self.ov9_size // 32):

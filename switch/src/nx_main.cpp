@@ -30,6 +30,10 @@ extern "C" void nr_install(void);
 
 int nds_upstream_main(int argc, char** argv);  // upstream main.cpp, renamed at compile time
 
+#ifdef MPHNX_LABEL
+#undef MPHNX_VERSION
+#define MPHNX_VERSION MPHNX_LABEL
+#endif
 #ifndef MPHNX_VERSION
 #define MPHNX_VERSION "switch-test9"
 #endif

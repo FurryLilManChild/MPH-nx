@@ -855,7 +855,11 @@ extern "C" void nr_stats_snapshot(unsigned long long* out, unsigned n) {
     for (unsigned i = 0; i < n && i < 16; ++i) out[i] = g_nr_stats[i];
 }
 
-static void remap_hook() { if (g_arm9_started_flag) nr_remap(); }
+extern "C" { void (*g_nr7_remap)(void) = nullptr; }
+static void remap_hook() {
+    if (g_arm9_started_flag) nr_remap();
+    if (g_nr7_remap) g_nr7_remap();   // native ARM7 page table (nr_runtime7.cpp)
+}
 
 // Once a second: flush the log to the SD card and write one status line, so a
 // hang (or an app closed from the HOME menu) still leaves the full story.
@@ -880,12 +884,17 @@ static void heartbeat_main() {
 
 // Installed by the Switch layer before the runner starts.
 extern bool g_nx_lean_interp;
+extern "C" void nr7_install(void);
 extern "C" void nr_install(void) {
     g_nx_native_build = true;
     g_nx_lean_interp = true;
     dir_build();
     g_nx_arm9_native_hook = nr_resume_arm9;
     g_nx_remap_hook = remap_hook;
+    // Native ARM7 (native6). NR7_DISABLE=1 (host) or the port menu's ARM7
+    // setting (Switch, frontend.cpp) keeps the old ARM7 engine.
+    const char* off7 = std::getenv("NR7_DISABLE");
+    if (!off7 || off7[0] != '1') nr7_install();
     std::thread(heartbeat_main).detach();
 }
 

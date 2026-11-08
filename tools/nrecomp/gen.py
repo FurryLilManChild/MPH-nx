@@ -28,10 +28,12 @@ def h32(v):
 
 
 class FuncGen:
-    def __init__(self, f, name, resolve, entries):
+    def __init__(self, f, name, resolve, entries, arch='v5te'):
         """resolve(target, thumb) -> ('direct', cname) | ('dyn', None)
-        entries: set of addresses that must be resumable (block starts)."""
+        entries: set of addresses that must be resumable (block starts).
+        arch 'v4t' (ARM7): LDR PC and LDM/POP {pc} keep the instruction set."""
         self.f = f
+        self.v5 = arch != 'v4t'
         self.name = name
         self.resolve = resolve
         self.out = []
@@ -149,7 +151,9 @@ class FuncGen:
         if not interwork:
             self.w('      _t = (_t & ~1u) | %d;' % (1 if self.f.thumb else 0))
         self.w('      ' + self.tick(1))
-        self.w('      if (_t == _elr) { NR_STORE(); g_cpu.R[15] = _t; NR_RET(); return; }')
+        # Return to the caller: R15 and the T bit name the caller's state, so a
+        # runtime loop comparing against its return address sees the real PC.
+        self.w('      if (_t == _elr) { NR_STORE(); g_cpu.cpsr = (g_cpu.cpsr & ~0x20u) | ((_t & 1u) << 5); g_cpu.R[15] = _t & ~1u; NR_RET(); return; }')
         self.w('      if ((_t & 1u) == _thumb) {')
         self.w('        if (nr_now >= nr_deadline) { NR_STORE(); g_cpu.R[15] = _t & ~1u; nr_service(); if (nr_redirect) return; NR_LOAD(); }')
         self.w('        _dj = _t; _djk = 1; goto L_DYN; }')
@@ -260,7 +264,7 @@ class FuncGen:
         byte = i.op.endswith('b')
         acc, new = self.addr_expr(i)
         if load and f['rd'] == 15 and f.get('static_target'):
-            self.emit_dyn_jump(i, None, interwork=True)
+            self.emit_dyn_jump(i, None, interwork=self.v5)
             return
         self.w('    { uint32_t _ea = %s;' % acc)
         if f['wb'] or not f['p']:
@@ -273,7 +277,7 @@ class FuncGen:
             if f['wb'] or not f['p']:
                 self.wb(i, '_nb')
             if f['rd'] == 15:
-                self.emit_dyn_jump(i, '_v', interwork=True)
+                self.emit_dyn_jump(i, '_v', interwork=self.v5)
                 self.w('    }')
                 return
             self.w('      r%d = _v;' % f['rd'])
@@ -341,7 +345,7 @@ class FuncGen:
             if r != 15:
                 self.w('      r%d = _l%d;' % (r, r))
         if 15 in regs:
-            self.emit_dyn_jump(i, '_pc', interwork=True)
+            self.emit_dyn_jump(i, '_pc', interwork=self.v5)
         self.w('    }')
 
     def op_stm(self, i):
@@ -538,7 +542,10 @@ class FuncGen:
         self.w('    NR_LOCALS();')
         self.w('    uint32_t _sv, _sc; (void)_sv; (void)_sc;')
         # A call to the function's own entry address is a normal entry.
-        self.w('    if ((entry & ~1u) == %s) entry = 0;' % h32(f.entry))
+        # Bit 31 marks a resume (the runtime continuing at this address after
+        # a redirect, LR unknown) even when the address is this function's own
+        # entry; without it, entry == own address is a normal call.
+        self.w('    if ((entry & ~1u) == %s) entry = 0; else entry &= 0x7FFFFFFFu;' % h32(f.entry))
         self.w('    const uint32_t _elr = entry ? 0xFFFFFFFFu : r14;')
         self.w('    uint32_t _dj = entry; int _djk = 0;')
         self.w('    if (!entry) goto L_%08X;' % f.entry)

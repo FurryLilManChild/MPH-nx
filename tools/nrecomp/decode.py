@@ -6,6 +6,13 @@ the analysis needs (branch targets, calls, returns, PC writes) and what the code
 generator needs (operation and operands).
 """
 
+# 'v5te' (ARM9) or 'v4t' (ARM7). ARMv4T has no BLX, CLZ, saturating or DSP
+# multiplies, LDRD/STRD or PLD, and its LDR PC / LDM {pc} / POP {pc} do not
+# switch instruction set (only BX does).
+ARCH = 'v5te'
+V5_ONLY = {'blx_imm', 'blx_reg', 'clz', 'qadd', 'qsub', 'qdadd', 'qdsub', 'pld', 'bkpt',
+           'smlaxy', 'smlawy', 'smulwy', 'smlalxy', 'smulxy', 'ldrd', 'strd'}
+
 DP_NAMES = ['and', 'eor', 'sub', 'rsb', 'add', 'adc', 'sbc', 'rsc',
             'tst', 'teq', 'cmp', 'cmn', 'orr', 'mov', 'bic', 'mvn']
 SH_NAMES = ['lsl', 'lsr', 'asr', 'ror']
@@ -29,6 +36,18 @@ class Insn:
     def __repr__(self):
         return '<%08x %s%s %s %s>' % (self.addr, 'T ' if self.thumb else '', self.op,
                                       self.cond, self.f)
+
+
+def _v4t_filter(i):
+    if ARCH != 'v4t' or i is None:
+        return i
+    if i.op in V5_ONLY:
+        return Insn(i.addr, i.size, i.thumb, i.raw, 'undef', i.cond)
+    if i.op in ('mcr', 'mrc') and i.f.get('cp') == 15:
+        return Insn(i.addr, i.size, i.thumb, i.raw, 'undef', i.cond)
+    if i.op in ('ldr', 'ldm') and i.writes_pc:
+        i.exchange = False
+    return i
 
 
 def ror32(v, n):
@@ -56,6 +75,10 @@ def _mark_pc_write(i, rd_is_pc):
 # ----------------------------------------------------------------------------
 
 def decode_arm(w, addr):
+    return _v4t_filter(_decode_arm(w, addr))
+
+
+def _decode_arm(w, addr):
     cond = w >> 28
     if cond == 15:
         return _decode_arm_uncond(w, addr)
@@ -263,6 +286,10 @@ def _dp(addr, raw, name, s, rd, rn, op2, cond=14):
 
 
 def decode_thumb(h, addr, h2=None):
+    return _v4t_filter(_decode_thumb(h, addr, h2))
+
+
+def _decode_thumb(h, addr, h2=None):
     """h: halfword at addr; h2: the following halfword (for BL pairs)."""
     top = h >> 13
     if top == 0:

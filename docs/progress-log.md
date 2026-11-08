@@ -2,6 +2,17 @@
 
 Newest first.
 
+## 2026-11-08: switch-native5b results, switch-native6 (native ARM7)
+
+- native5 crashed at launch: the deko3d shader code heap's block pool (64) ran out with 102 shaders (three render-size sets). native5b: pools raised to 1024; pool exhaustion now logs before it traps.
+- native5b hung at boot (white screen): the ARM7 died in FreeBIOS's park loop. Turning Fast loading off boots; the native5 card change (card registers without CPU-sync fences, card status polls completed at once) is the cause. Fast loading is now off by default; loads are low priority for Mark, so it stays parked.
+- Resolution scaler works on hardware (Mark): emulation time per frame about the same at 1x, 1.5x and 2x (12 to 14 ms); presenting goes from 0.14 ms to about 1.6 ms on its own thread.
+- native5b gameplay profile: idle 26%, video 15%, scheduler and dispatch 15%, I/O, DMA, timers and bus 14%, ARM7 11%, ARM9 game code 3%, interpreter 0.3%.
+- native6: the ARM7 program runs as native code (tools/nrecomp/gen_all7.py, switch/native/nr_runtime7.cpp). ARMv4T rules in the decoder (no BLX/CLZ/DSP/LDRD; LDR PC and LDM {pc} keep the instruction set). The startup code's autoload table gives the WRAM and main-RAM sections; roots are the old ARM7 engine's entry lists where nothing decoded yet (975 functions, 38k instructions, none failed). Own page table, coroutine, IRQ entry (handler at 0x03FFFFFC), IntrWait flags at 0x03FFFFF8, halt by SWI 06/1F and HALTCNT. BIOS calls run with IME held at 0 (the FreeBIOS dispatcher re-enables interrupts); GetSine/Pitch/VolumeTable results are memoised. Port menu: Speed > Native ARM7 (restart) to compare with the old engine.
+- Generator fixes (both CPUs): a resume at an address that is also a function entry is marked with bit 31 (it was treated as a call with a stale LR); a return sets R15 and the T bit to the caller's state.
+- Cloud boot test: card commands match the reference; reaches the Sylux intro; 3e9 cycles in 13.8 s against 20.0 s with the old ARM7 engine in the same build. ARM7 interpreted instructions about 11k a second.
+- Build label: now a define on nx_main.cpp and frontend.cpp only (MPHNX_LABEL), so changing it recompiles two files. The old target-wide define stays frozen at switch-native5 until a full engine rebuild.
+
 ## 2026-11-07: switch-native4 results, switch-native5
 
 - native4: best run yet; 60 fps most of the time, dips into the 40s and 50s, two drops to about 19 fps during loads. Profile of the emulation thread: game code about 2%, idle about 13%, video work about 11%, interpreter fallback about 7% (half of it coverage bookkeeping), ARM7 on the old engine about 8%, native lookup about 5%, scheduler and I/O about 13%.

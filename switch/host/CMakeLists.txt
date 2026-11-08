@@ -40,14 +40,14 @@ set_source_files_properties(
     PROPERTIES COMPILE_DEFINITIONS "MPHNX_HOST=1")
 
 set(_nat "${CMAKE_CURRENT_SOURCE_DIR}/../native")
-file(GLOB _native_units CONFIGURE_DEPENDS "${MPHNX_NATIVE_DIR}/nr_*.c")
+file(GLOB _native_units CONFIGURE_DEPENDS "${MPHNX_NATIVE_DIR}/nr_*.c" "${MPHNX_NATIVE_DIR}/nr7_*.c")
 add_library(mphnx_native_game STATIC ${_native_units})
 target_include_directories(mphnx_native_game PRIVATE "${_nat}" "${MPHNX_NATIVE_DIR}"
     "${NDSRECOMP_ROOT}/external/arm-recomp-core/common")
 target_compile_options(mphnx_native_game PRIVATE -O1 -g0 -w -fno-strict-aliasing)
 # Host debug: function-entry log (NR_CALLTRACE_FROM decides when it prints).
 target_compile_definitions(mphnx_native_game PRIVATE NR_CALLTRACE=1)
-target_sources(nds_runner PRIVATE "${_nat}/nr_runtime.cpp" "${_nat}/nr_coro.c"
+target_sources(nds_runner PRIVATE "${_nat}/nr_runtime.cpp" "${_nat}/nr_runtime7.cpp" "${_nat}/nr_coro.c"
     "${_nat}/nr_coro_switch.S" "${CMAKE_CURRENT_SOURCE_DIR}/host_install.cpp")
 target_include_directories(nds_runner PRIVATE "${_nat}" "${MPHNX_NATIVE_DIR}")
 target_compile_definitions(nds_runner PRIVATE MPHNX_NATIVE=1 NR_CALLTRACE=1)

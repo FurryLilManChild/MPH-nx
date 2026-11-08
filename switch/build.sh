@@ -25,7 +25,7 @@ MPH_ROM="${MPH_ROM:-$MPH_ROOT/Metroid Prime Hunters.nds}"
 BUILD_DIR="${BUILD_DIR:-/home/claude/build/nx}"
 DKRUN="${DKRUN:-/home/claude/dk.sh}"
 JOBS="${JOBS:-2}"
-VERSION="${MPHNX_VERSION:-switch-native5}"
+VERSION="${MPHNX_VERSION:-switch-native6}"
 TITLE="${MPHNX_TITLE:-MPH-nx}"
 PIE_LIBS="${MPHNX_PIE_LIBS:-ON}"
 LEAN="${MPHNX_LEAN:-ON}"
@@ -90,6 +90,12 @@ if [ "$NATIVE" = 1 ]; then
   # Runtime roots found by boot tests (derived from the game; never committed).
   export NR_EXTRA_ROOTS="${NR_EXTRA_ROOTS:-$(dirname "$BUILD_DIR")/nrroots.txt}"
   python3 "$HERE/../tools/nrecomp/gen_all.py" "$MPH_ROM_REV1" "$NATIVE_DIR" || die "native generation failed"
+  # Native ARM7 (native6). Extra roots: the old ARM7 engine's entry lists
+  # (upstream's generated inputs) plus runtime misses from tests.
+  A7IN="$MPH_ROOT/generated/inputs"
+  export NR7_EXTRA_ROOTS="${NR7_EXTRA_ROOTS:-$A7IN/arm7_wram_alias.toml:$A7IN/arm7_mainram_alias.toml:$(dirname "$BUILD_DIR")/nrroots7.txt}"
+  say "  native ARM7 program"
+  python3 "$HERE/../tools/nrecomp/gen_all7.py" "$MPH_ROM_REV1" "$NATIVE_DIR" || die "native ARM7 generation failed"
   PERF_DIR=""
 fi
 

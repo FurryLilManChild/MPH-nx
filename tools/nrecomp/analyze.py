@@ -157,6 +157,9 @@ class Analyzer:
             lit = base + (i.f['off']['value'] if i.f['u'] else -i.f['off']['value'])
             v = self.img.r32(lit)
             if v is not None and self.img.seg(v & ~1):
+                import decode
+                if decode.ARCH == 'v4t':   # ARMv4T: LDR PC keeps the instruction set
+                    return ((v & ~1) if f.thumb else (v & ~3), f.thumb)
                 return (v & ~1, bool(v & 1))
         return None
 

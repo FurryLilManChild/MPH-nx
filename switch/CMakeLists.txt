@@ -13,7 +13,13 @@ if(NOT NINTENDO_SWITCH)
     message(FATAL_ERROR "MPH-nx: configure with the devkitPro Switch toolchain")
 endif()
 
-set(MPHNX_VERSION "switch-native5" CACHE STRING "Version string shown in logs and hbmenu")
+# The build label lives in two source files only (nx_main.cpp, frontend.cpp),
+# so a new label recompiles those two and nothing else. MPHNX_ENGINE_TAG is
+# the old target-wide define, kept at its last value: changing a target-wide
+# define recompiles the whole engine. Drop it at the next build that rebuilds
+# everything anyway.
+set(MPHNX_VERSION "switch-native6" CACHE STRING "Build label shown in logs and hbmenu")
+set(MPHNX_ENGINE_TAG "switch-native5")
 set(MPHNX_TITLE "MPH-nx" CACHE STRING "Name shown in hbmenu")
 option(MPHNX_PIE_LIBS "Compile the runner's static libraries (game banks included) as -fPIE instead of -fPIC" ON)
 set(MPHNX_PERF_BANK_DIR "" CACHE PATH "Flat-AOT mph_perf_arm9 bank (nds_recompile --flat-execution); empty = faithful only")
@@ -105,7 +111,7 @@ if(MPHNX_NATIVE_DIR)
     # MPH-nx native static recompilation (docs/native-recomp-design.md).
     # Every ARM9 function is a C function with direct calls and returns; the
     # runtime runs it as a coroutine inside the existing scheduler's ARM9 slice.
-    file(GLOB _native_units CONFIGURE_DEPENDS "${MPHNX_NATIVE_DIR}/nr_*.c")
+    file(GLOB _native_units CONFIGURE_DEPENDS "${MPHNX_NATIVE_DIR}/nr_*.c" "${MPHNX_NATIVE_DIR}/nr7_*.c")
     if(NOT _native_units OR NOT EXISTS "${MPHNX_NATIVE_DIR}/nr_tables.c")
         message(FATAL_ERROR "MPH-nx: native program missing in ${MPHNX_NATIVE_DIR}")
     endif()
@@ -122,7 +128,7 @@ if(MPHNX_NATIVE_DIR)
         target_compile_options(mphnx_native_game PRIVATE -fPIE
             "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/compat/mphnx_hidden.h")
     endif()
-    target_sources(nds_runner PRIVATE "${_nat}/nr_runtime.cpp" "${_nat}/nr_coro.c" "${_nat}/nr_coro_switch.S")
+    target_sources(nds_runner PRIVATE "${_nat}/nr_runtime.cpp" "${_nat}/nr_runtime7.cpp" "${_nat}/nr_coro.c" "${_nat}/nr_coro_switch.S")
     target_include_directories(nds_runner PRIVATE "${_nat}" "${MPHNX_NATIVE_DIR}")
     target_compile_definitions(nds_runner PRIVATE MPHNX_NATIVE=1)
     target_link_libraries(nds_runner PRIVATE mphnx_native_game)
@@ -150,7 +156,9 @@ set_source_files_properties("${_runner_dir}/src/main.cpp"
 target_sources(nds_runner PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/nx_main.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/nx_platform.c")
-target_compile_definitions(nds_runner PRIVATE MPHNX_VERSION="${MPHNX_VERSION}")
+target_compile_definitions(nds_runner PRIVATE MPHNX_VERSION="${MPHNX_ENGINE_TAG}")
+set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/nx_main.cpp" "${NDSRECOMP_ROOT}/runner/src/frontend.cpp" TARGET_DIRECTORY nds_runner
+    APPEND PROPERTY COMPILE_DEFINITIONS MPHNX_LABEL="${MPHNX_VERSION}")
 target_include_directories(nds_runner PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_options(nds_runner PRIVATE
     "-Wl,--wrap=pthread_create"
