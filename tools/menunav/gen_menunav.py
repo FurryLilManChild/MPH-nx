@@ -41,7 +41,7 @@ def fingerprint(px, rect):
             out.append(tuple(v // n for v in s))
     return out
 
-KIND = {'nav': 'kNavPort', 'popup': 'kNavPopup', 'game': 'kNavGame', 'starmap': 'kNavStarmap', 'files': 'kNavFiles'}
+KIND = {'nav': 'kNavPort', 'popup': 'kNavPopup', 'game': 'kNavGame', 'starmap': 'kNavStarmap', 'files': 'kNavFiles', 'play': 'kNavPlay'}
 fps = []   # flat list of (r,g,b)
 def add_fp(px, rect):
     off = len(fps)
@@ -60,17 +60,18 @@ for s in SCREENS:
     tg = []
     for t in s['targets']:
         name, rect, need = t[0], t[1], t[2]
-        src = t[3] if len(t) > 3 else s['src']
+        src = t[3] if len(t) > 3 and t[3] else s['src']
         off, gw, gh = add_fp(load(src), rect)
-        tg.append((name, rect, need, off, gw, gh))
+        off2 = add_fp(load(t[4]), rect)[0] if len(t) > 4 else -1
+        tg.append((name, rect, need, off, gw, gh, off2))
     first_key = len(lines_rects)
     for (k, off, gw, gh) in keys:
-        lines_rects.append('    {%d, %d, %d, %d, %d, %d, %d, false, "key"},' % (k[0], k[1], k[2], k[3], off, gw, gh))
+        lines_rects.append('    {%d, %d, %d, %d, %d, %d, %d, false, "key", -1},' % (k[0], k[1], k[2], k[3], off, gw, gh))
     first_t = len(lines_rects)
     names = [t[0] for t in tg]
-    for (name, rect, need, off, gw, gh) in tg:
-        lines_rects.append('    {%d, %d, %d, %d, %d, %d, %d, %s, "%s"},' % (rect[0], rect[1], rect[2], rect[3], off, gw, gh,
-                                                                        'true' if need else 'false', name))
+    for (name, rect, need, off, gw, gh, off2) in tg:
+        lines_rects.append('    {%d, %d, %d, %d, %d, %d, %d, %s, "%s", %d},' % (rect[0], rect[1], rect[2], rect[3], off, gw, gh,
+                                                                        'true' if need else 'false', name, off2))
     back = names.index(s['back']) if s['back'] in names else -1
     default = names.index(s['default']) if s['default'] in names else -1
     lines_screens.append('    {"%s", %s, %d, %d, %d, %d, %d, %d},' % (

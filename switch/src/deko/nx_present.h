@@ -6,6 +6,17 @@
 
 struct NxRect { int x, y, w, h; };
 
+// native16: a piece of the bottom screen drawn over the top screen (Top
+// only + HUD), blended on the GPU. Alpha (0..255) goes from alpha_dark for
+// dark source pixels to alpha_bright for bright ones, so radar lines and
+// text stay solid while the panel background lets the game show through.
+struct NxPanel
+{
+    int sx, sy, sw, sh;       // source rect, DS bottom-screen pixels
+    NxRect dst;               // window pixels
+    int alpha_dark, alpha_bright;
+};
+
 struct NxPresentFrame
 {
     const uint32_t* top;      // 256 x 192, 0xAARRGGBB
@@ -29,6 +40,8 @@ struct NxPresentFrame
     uint64_t hi_addr;           // GPU address of the render-size 3D image
     int hi_w, hi_h;
     uint32_t serial3d;          // native8g: which 3D frame this frame shows (0 unknown)
+    NxPanel panels[3];          // native16
+    int npanels;
 };
 
 struct NxPresentTicks { uint64_t upload, draw, swap; };

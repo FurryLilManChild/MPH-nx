@@ -2,6 +2,14 @@
 
 Newest first.
 
+## 2026-11-09: switch-native16 (Top only + HUD layout, D-pad weapons)
+
+- native15 (Mark): audio stretch works; new port menu good. Log: dropouts fell from up to 68 per 10 s to a handful, inside the heaviest loads (about 19 fps), where the sound now fades.
+- New screen layout "Top only + HUD" (QoL item 3), from Mark's mock-up: in play the weapon slots (top-left) and the radar/console (bottom-left) are copied from the bottom screen onto the game view and blended on the GPU (new PanelBlend compute shader; the frame is composed in a pitch-linear copy when panels are on). Dark panel pixels are mostly see-through, bright radar lines and text stay solid. Scan results get a large console at the bottom centre. Menus, pop-ups, the weapon wheel and minus show the whole bottom screen over the dimmed game; unrecognised screens show top only.
+- New "play" screen in menunav (cockpit frame keys) so the port knows when it is in play; it is listed last so pop-ups on the same frame win, and leaving a pop-up for play takes 10 frames. Scan pop-up: the blinking right arrow has both fingerprints, and a highlighted button that blinks out keeps the highlight.
+- Weapons (all layouts, in play): D-pad right/left = next/previous of beam, missiles and the weapon in the third slot (when that slot is filled); hold D-pad up = the game's own weapon wheel by touch (lift aim touch, hold the wheel button, the left stick picks one of the six boxes, letting go selects). ZL stays free for lock-on.
+- File select: A taps the highlighted file (DS A opens Movies there); the mode select is now also keyed on its Options icon so the two screens never swap.
+
 ## 2026-11-09: switch-native15 (audio stretch on the audio thread; port menu clean-up)
 
 - native14 (Mark): still crackled in the title-screen slowdowns after button presses and while large rooms load. Log: stretching was on and pinned at its limit (peak 2.48x, 2 s stretched in a 10 s window at 25.8 fps) with up to 68 underruns per 10 s; clean in normal play. Cause: native14 stretched on the emulation thread once per finished frame, so a frame longer than the ~60 ms queue still ran it dry, and the worst title dips needed more than 2.5x.

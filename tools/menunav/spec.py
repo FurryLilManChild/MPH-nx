@@ -1,5 +1,6 @@
+# Screen specs. A target may name a second capture (5th field): the blinking state of the same button.
 # Screen specs. Rects are DS bottom-screen pixels, inclusive. 'src' = capture the fingerprint comes from.
-# kind: 'nav' (port highlight), 'popup' (highlight, B = back target), 'game' (A -> DS A), 'starmap', 'files' (A taps the game's red-ringed file)
+# kind: 'nav' (port highlight), 'popup' (highlight, B = back target), 'game' (A -> DS A), 'starmap', 'files' (A taps the game's red-ringed file), 'play' (cockpit, not a menu)
 SCREENS = [
  dict(name='exitsure', kind='popup', src='012', keys=[], back='no', default='yes',
       targets=[('yes',(55,166,87,178),True),('no',(119,166,151,178),True)]),
@@ -14,7 +15,7 @@ SCREENS = [
  dict(name='enter', kind='popup', src='005', keys=[], back='no', default='yes',
       targets=[('yes',(80,134,111,149),True),('no',(144,134,175,149),True)]),
  dict(name='scan', kind='popup', src=None, keys=[], back=None, default='right',
-      targets=[('left',(56,134,87,149),True,'014'),('ok',(113,134,144,149),True,'014'),('right',(169,133,200,148),True,'013')]),
+      targets=[('left',(56,134,87,149),True,'014'),('ok',(113,134,144,149),True,'014'),('right',(169,133,200,148),True,'013','105')]),
  dict(name='landed', kind='nav', src='004', keys=[(62,2,142,38),(62,143,143,181),(0,33,46,68),(203,57,255,92)], back=None, default='save',
       targets=[('save',(62,2,142,38),False),('weapon',(0,33,46,68),False),('logbook',(203,57,255,92),False),
                ('options',(0,113,46,148),False),('exit',(62,143,143,181),False),('launch',(150,121,250,183),False)]),
@@ -40,4 +41,7 @@ SCREENS = [
  dict(name='files', kind='files', src='002', keys=[(8,160,31,184),(215,156,240,180)], back=None, default='fileB',
       targets=[('fileA',(14,38,82,106),False),('fileB',(94,38,162,106),False),('fileC',(174,38,242,106),False)]),
  dict(name='title', kind='game', src='001', keys=[(8,160,31,184),(216,110,240,128)], back=None, default=None, targets=[]),
+ # In-game play screen (cockpit frame): not a menu. Used by the Top only + HUD layout and the
+ # D-pad weapon controls. Last, so every pop-up drawn on the same frame wins.
+ dict(name='play', kind='play', src='101', keys=[(2,2,62,12),(204,16,248,60)], back=None, default=None, targets=[]),
 ]

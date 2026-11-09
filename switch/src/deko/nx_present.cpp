@@ -34,6 +34,7 @@ dk::Image g_fb[kSlots];
 // Per swapchain slot: top, bottom, HUD. One extra black image for clears.
 dk::Image g_src[kSlots][3];
 uint32_t* g_src_cpu[kSlots][3];
+uint32_t g_src_off[kSlots][3];
 dk::Image g_black;
 dk::CmdBuf g_cmd;
 dk::Fence g_fence[kSlots];
@@ -50,6 +51,17 @@ uint32_t g_hd_in_off[kSlots], g_hd_out_off[kSlots];
 // views of one buffer per render size: 1.5x, 2x, 3x, 4x
 constexpr uint32_t kHdDims[4][2] = {{384, 288}, {512, 384}, {768, 576}, {1024, 768}};
 dk::Image g_hd_out_img[kSlots][4];
+
+// native16 HUD panels: when a frame has panels it is composed into this
+// pitch-linear copy (blits), the panels are blended in by PanelBlend, and the
+// copy is blitted to the swapchain image.
+dk::Shader g_panel;
+bool g_panel_ok = false;
+dk::MemBlock g_comp_mem;
+dk::Image g_comp;
+struct PanelParams {
+    uint32_t dst_x, dst_y, dst_w, dst_h, src_x, src_y, src_w, src_h, alpha_dark, alpha_bright, pitch;
+};
 
 // native8c diagnostics
 std::atomic<unsigned> g_stat_hd[4] = {}, g_stat_refused{0}, g_stat_plain{0};
@@ -171,7 +183,8 @@ void draw_notice(uint32_t* buf, const char* text, const char* (*glyph)(char))
     }
 }
 
-bool make_pitch_image(dk::Image& img, uint32_t*& cpu, uint32_t w, uint32_t h, uint32_t& offset)
+bool make_pitch_image(dk::Image& img, uint32_t*& cpu, uint32_t w, uint32_t h, uint32_t& offset,
+                      uint32_t* where = nullptr)
 {
     dk::ImageLayout layout;
     dk::ImageLayoutMaker{NxDeko::Device}
@@ -182,6 +195,7 @@ bool make_pitch_image(dk::Image& img, uint32_t*& cpu, uint32_t w, uint32_t h, ui
         .initialize(layout);
     offset = align_up(offset, (uint32_t)layout.getAlignment());
     img.initialize(layout, g_src_mem, offset);
+    if (where) *where = offset;
     cpu = reinterpret_cast<uint32_t*>(static_cast<uint8_t*>(g_src_mem.getCpuAddr()) + offset);
     offset += (uint32_t)layout.getSize();
     return true;
@@ -229,7 +243,7 @@ bool nx_present_init()
     uint32_t off = 0;
     for (int i = 0; i < kSlots; ++i) {
         make_pitch_image(g_src[i][0], g_src_cpu[i][0], kDsW, kDsH, off);
-        make_pitch_image(g_src[i][1], g_src_cpu[i][1], kDsW, kDsH, off);
+        make_pitch_image(g_src[i][1], g_src_cpu[i][1], kDsW, kDsH, off, &g_src_off[i][1]);
         make_pitch_image(g_src[i][2], g_src_cpu[i][2], kHudW, kHudH, off);
     }
     uint32_t* black = nullptr;
@@ -270,6 +284,22 @@ bool nx_present_init()
         }
     }
 
+    // native16 HUD panels
+    g_panel_ok = NxDeko::LoadShader("PanelBlend", g_panel);
+    if (g_panel_ok) {
+        dk::ImageLayout layout;
+        dk::ImageLayoutMaker{dev}
+            .setFlags(DkImageFlags_PitchLinear | DkImageFlags_Usage2DEngine)
+            .setFormat(DkImageFormat_RGBA8_Unorm)
+            .setDimensions(kFbW, kFbH)
+            .setPitchStride(kFbW * 4)
+            .initialize(layout);
+        g_comp_mem = dk::MemBlockMaker{dev, align_up((uint32_t)layout.getSize(), DK_MEMBLOCK_ALIGNMENT)}
+            .setFlags(DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image)
+            .create();
+        g_comp.initialize(layout, g_comp_mem, 0);
+    }
+
     g_swapchain = dk::SwapchainMaker{dev, nwindowGetDefault(), fbs}.create();
     if (!g_swapchain) { std::fprintf(stderr, "[present] swapchain failed\n"); return false; }
     g_swapchain.setSwapInterval(1);
@@ -307,10 +337,11 @@ void present_now(const NxPresentFrame& f)
     uint32_t* hud = g_src_cpu[slot][2];
     copy_screen(top, f.top, f.dim_top);
     const bool draw_bottom = f.bottom_rect.w > 0;
-    if (draw_bottom) {
+    const bool panels = g_panel_ok && f.npanels > 0 && f.bottom;
+    if (draw_bottom || panels) {
         copy_screen(bottom, f.bottom, false);
-        if (f.cursor) draw_cursor(bottom, f.cursor_x, f.cursor_y);
-        if (f.notice && *f.notice) draw_notice(bottom, f.notice, f.glyph);
+        if (draw_bottom && f.cursor) draw_cursor(bottom, f.cursor_x, f.cursor_y);
+        if (draw_bottom && f.notice && *f.notice) draw_notice(bottom, f.notice, f.glyph);
     }
     int hud_chars = 0;
     if (f.hud_text && *f.hud_text) {
@@ -322,7 +353,7 @@ void present_now(const NxPresentFrame& f)
 
     g_cmd.clear();
     g_cmd.addMemory(g_cmd_mem, slot * kCmdSlotSize, kCmdSlotSize);
-    dk::ImageView fb_view{g_fb[slot]};
+    dk::ImageView fb_view{panels ? g_comp : g_fb[slot]};
     dk::ImageView black_view{g_black};
     g_cmd.blitImage(black_view, {0, 0, 0, 16, 16, 1}, fb_view, {0, 0, 0, kFbW, kFbH, 1},
                     DkBlitFlag_FilterNearest);
@@ -378,6 +409,38 @@ void present_now(const NxPresentFrame& f)
         const uint32_t hw = (uint32_t)(hud_chars * 6 + 3);
         dk::ImageView hud_view{g_src[slot][2]};
         g_cmd.blitImage(hud_view, {0, 0, 0, hw, 11, 1}, fb_view, {6, 6, 0, hw * 3, 33, 1},
+                        DkBlitFlag_FilterNearest);
+    }
+    if (panels) {
+        g_cmd.barrier(DkBarrier_Full, DkInvalidateFlags_L2Cache);
+        g_cmd.bindShaders(DkStageFlag_Compute, {&g_panel});
+        const DkGpuAddr par_base = g_hd_in_mem.getGpuAddr() + g_hd_in_off[slot] + 2 * kHdLayerBytes + kHdParamsBytes;
+        const DkGpuAddr src_gpu = g_src_mem.getGpuAddr() + g_src_off[slot][1];
+        for (int k = 0; k < f.npanels && k < 3; ++k) {
+            const NxPanel& pn = f.panels[k];
+            NxRect d = pn.dst;
+            if (d.x < 0) { d.w += d.x; d.x = 0; }
+            if (d.y < 0) { d.h += d.y; d.y = 0; }
+            if (d.x + d.w > kFbW) d.w = kFbW - d.x;
+            if (d.y + d.h > kFbH) d.h = kFbH - d.y;
+            if (d.w <= 0 || d.h <= 0 || pn.sw <= 0 || pn.sh <= 0) continue;
+            PanelParams p{(uint32_t)d.x, (uint32_t)d.y, (uint32_t)d.w, (uint32_t)d.h,
+                          (uint32_t)pn.sx, (uint32_t)pn.sy, (uint32_t)pn.sw, (uint32_t)pn.sh,
+                          (uint32_t)pn.alpha_dark, (uint32_t)pn.alpha_bright, (uint32_t)kFbW};
+            const DkGpuAddr par = par_base + 256u * k;
+            g_cmd.bindUniformBuffer(DkStage_Compute, 0, par, 256);
+            g_cmd.pushConstants(par, 256, 0, sizeof(p), &p);
+            g_cmd.bindStorageBuffers(DkStage_Compute, 0, {
+                {src_gpu, (uint32_t)(kDsW * kDsH * 4)},
+                {g_comp_mem.getGpuAddr(), (uint32_t)(kFbW * kFbH * 4)},
+            });
+            g_cmd.dispatchCompute((uint32_t)(d.w + 7) / 8, (uint32_t)(d.h + 7) / 8, 1);
+            g_cmd.barrier(DkBarrier_Full, DkInvalidateFlags_L2Cache);
+        }
+        g_cmd.barrier(DkBarrier_Full, DkInvalidateFlags_Image | DkInvalidateFlags_L2Cache);
+        dk::ImageView comp_view{g_comp};
+        dk::ImageView real_fb{g_fb[slot]};
+        g_cmd.blitImage(comp_view, {0, 0, 0, kFbW, kFbH, 1}, real_fb, {0, 0, 0, kFbW, kFbH, 1},
                         DkBlitFlag_FilterNearest);
     }
     g_cmd.signalFence(g_fence[slot]);

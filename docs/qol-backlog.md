@@ -28,6 +28,7 @@ in-game speed work is done.
   buttons he wants for them (the remap menu can expose them).
 
 ## 3. Play without the second screen (top-only experience)
+- native16: first version (layout "Top only + HUD", weapon slots and radar/console panels, D-pad weapons).
 - Goal: a true single-screen port. What the bottom screen shows that matters
   in play moves onto the top screen's HUD.
 - Yes, we can add to the HUD. The presenter already composes the final image
