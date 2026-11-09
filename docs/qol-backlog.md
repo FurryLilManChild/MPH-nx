@@ -56,3 +56,16 @@ in-game speed work is done.
 - Open questions: single player only, or multiplayer too (lock-on against
   other players changes the balance, so likely off or optional there); a
   reticle drawn on the target with the HUD work in item 3; target cycling.
+
+## 5. Port menu clean-up for release
+- Mark (2026-11-09): the menu still exposes the performance-tuning settings
+  and speed-test toggles; an end user does not need them.
+- Proposed user menu: Display (screen layout, resolution, show speed), CPU
+  clock, Controls (bindings, reset), Menu buttons, Audio stretch.
+- Everything else (fast loading, native ARM7, fast scheduler, CPU sync, 3D
+  renderer, block linking, game code, dispatch cache, and the 13 speed-test
+  toggles) is fixed at the tested defaults and moved to a hidden developer
+  section (for example: only shown when a file such as
+  /switch/mph-nx/developer.on exists), so test builds can still flip them.
+- Saved settings from test builds that changed a hidden option are reset to
+  the defaults on first start of the release build.
