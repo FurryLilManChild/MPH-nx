@@ -2,6 +2,12 @@
 
 Newest first.
 
+## 2026-11-09: switch-native12 (screen captures); optimization closed
+
+- native11 (Mark): good performance at stock even at 2x. Log: stock 1020 MHz held 60 fps in game at 1x, 2x and 3x, emulation 10 to 12.5 ms a frame. The time-breakdown line did not work (about 0.3 ms reported against about 11 ms real: the 19.2 MHz system counter is too coarse for the per-region overhead subtraction); removed. Clock line kept.
+- Mark closed optimization: the second-CPU-on-demand change is dropped (unclear gain, risky). Next: quality of life (docs/qol-backlog.md), starting with menus and scan prompts driven by stick/D-pad plus one select button.
+- native12: L3 saves both DS screens stacked, 3x, as /switch/mph-nx/captures/cap-NNN.bmp (Mark's modded Switch cannot retrieve Album captures) so Mark can capture every menu and prompt for mockups.
+
 ## 2026-11-09: switch-native11 (fallback code native, clocks and time breakdown in the log)
 
 - native10 confirmed by Mark: shaking gone, "backwards" 0 at every size, each 30 fps 3D frame up for exactly two refreshes. Gameplay 60 fps overclocked, emulation 5.6 to 9.5 ms a frame. Mark: release target is stock clock at 1x; higher scaler sizes may need an overclock.

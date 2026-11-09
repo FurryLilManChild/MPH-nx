@@ -499,7 +499,7 @@ index 022a1af..8c31a75 100644
  #endif
      if (supported) {
 diff --git a/runner/src/frontend.cpp b/runner/src/frontend.cpp
-index 7d9d4eb..ab72474 100644
+index 7d9d4eb..c2e9769 100644
 --- a/runner/src/frontend.cpp
 +++ b/runner/src/frontend.cpp
 @@ -4,6 +4,7 @@
@@ -510,7 +510,14 @@ index 7d9d4eb..ab72474 100644
  #include <algorithm>
  #include <array>
  #include <atomic>
-@@ -25,6 +26,14 @@
+@@ -21,10 +22,21 @@
+ #include <stdexcept>
+ #include <string>
+ #include <vector>
++#if defined(__SWITCH__)
++#include <sys/stat.h>
++#endif
+ 
  #include "debug_server.h"
  #include "diagnostics.h"
  #include "gpu2d.h"
@@ -525,7 +532,7 @@ index 7d9d4eb..ab72474 100644
  #include "gpu3d.h"
  #include "melonds_compute/TextureUpscale.h"
  #include "io.h"
-@@ -32,6 +41,8 @@
+@@ -32,6 +44,8 @@
  #include "relative_mouse_touch.h"
  #include "runtime_arm.h"
  #include "scheduler.h"
@@ -534,7 +541,7 @@ index 7d9d4eb..ab72474 100644
  #include "savestate_slots.h"
  #include "spu.h"
  #include "title_patches.h"
-@@ -215,6 +226,84 @@ void observe_top_black_bands(const uint32_t* pixels, uint64_t frame,
+@@ -215,6 +229,84 @@ void observe_top_black_bands(const uint32_t* pixels, uint64_t frame,
  #include "recomp_runtime_ui.h"
  
  #include "frontend_latency.h"
@@ -619,7 +626,7 @@ index 7d9d4eb..ab72474 100644
  
  namespace {
  
-@@ -815,6 +904,12 @@ bool sdl_init_frontend() {
+@@ -815,6 +907,12 @@ bool sdl_init_frontend() {
      return SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS |
                      SDL_INIT_GAMECONTROLLER);
  #else
@@ -632,7 +639,7 @@ index 7d9d4eb..ab72474 100644
      return SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS |
                      SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) == 0;
  #endif
-@@ -1006,10 +1101,34 @@ uint32_t drain_audio(const NdsAudioDevice& device, AudioQueue& queue,
+@@ -1006,10 +1104,34 @@ uint32_t drain_audio(const NdsAudioDevice& device, AudioQueue& queue,
                       bool throttle, uint32_t pace_floor, bool& queue_error,
                       const std::vector<int16_t>* owned_pcm = nullptr) {
      if (!device) return 0;
@@ -669,7 +676,7 @@ index 7d9d4eb..ab72474 100644
              ? static_cast<uint32_t>(std::min<size_t>(1024,(owned_pcm->size()-pcm_offset)/2u))
              : nds_spu_read_output(samples.data(), 1024);
          if (!frames) break;
-@@ -1017,6 +1136,25 @@ uint32_t drain_audio(const NdsAudioDevice& device, AudioQueue& queue,
+@@ -1017,6 +1139,25 @@ uint32_t drain_audio(const NdsAudioDevice& device, AudioQueue& queue,
              std::copy_n(owned_pcm->data()+pcm_offset,frames*2u,samples.data());
              pcm_offset+=frames*2u;
          }
@@ -695,7 +702,7 @@ index 7d9d4eb..ab72474 100644
          bool pushed = false;
          while (!pushed) {
  #if defined(NDS_HAVE_SDL3)
-@@ -1066,7 +1204,7 @@ uint32_t drain_audio(const NdsAudioDevice& device, AudioQueue& queue,
+@@ -1066,7 +1207,7 @@ uint32_t drain_audio(const NdsAudioDevice& device, AudioQueue& queue,
      // down while the emulator is running behind, so a slow stretch spends the
      // buffered runway instead of having it slept away.
      uint32_t queued = audio_queue_count(device, queue);
@@ -704,7 +711,7 @@ index 7d9d4eb..ab72474 100644
          // Spend existing audio pacing slack preparing qualified native code.
          // Guest CPUs remain paused; under load/no slack demand execution wins.
          if (!nds_arm9_native_prepare_idle(1000)) SDL_Delay(1);
-@@ -1185,6 +1323,169 @@ constexpr const char* kRuntimeMouseSensitivityKey =
+@@ -1185,6 +1326,169 @@ constexpr const char* kRuntimeMouseSensitivityKey =
  constexpr const char* kRuntimeResumeKey = "system.resume";
  constexpr const char* kRuntimeQuitKey = "system.quit";
  
@@ -874,7 +881,7 @@ index 7d9d4eb..ab72474 100644
  struct RuntimeMenuState {
      NdsFrontendOptions* options = nullptr;
      bool* running = nullptr;
-@@ -1235,6 +1536,30 @@ int runtime_menu_get_value(void* context, const RecompRuntimeUiItem* item,
+@@ -1235,6 +1539,30 @@ int runtime_menu_get_value(void* context, const RecompRuntimeUiItem* item,
                             int* value_out) {
      auto* state = static_cast<RuntimeMenuState*>(context);
      if (!state || !state->options || !item || !value_out) return 0;
@@ -905,7 +912,7 @@ index 7d9d4eb..ab72474 100644
      if (std::strcmp(item->key, kRuntimeMouseSensitivityKey) == 0) {
          *value_out = state->options->relative_mouse_sensitivity;
          return 1;
-@@ -1246,6 +1571,106 @@ int runtime_menu_set_value(void* context, const RecompRuntimeUiItem* item,
+@@ -1246,6 +1574,106 @@ int runtime_menu_set_value(void* context, const RecompRuntimeUiItem* item,
                             int value) {
      auto* state = static_cast<RuntimeMenuState*>(context);
      if (!state || !state->options || !item) return 0;
@@ -1012,7 +1019,7 @@ index 7d9d4eb..ab72474 100644
      if (std::strcmp(item->key, kRuntimeMouseSensitivityKey) == 0) {
          if (value < 10 || value > 400) return 0;
          state->options->relative_mouse_sensitivity =
-@@ -1267,6 +1692,17 @@ int runtime_menu_run_action(void* context, const RecompRuntimeUiItem* item) {
+@@ -1267,6 +1695,17 @@ int runtime_menu_run_action(void* context, const RecompRuntimeUiItem* item) {
          if (state->running) *state->running = false;
          return 1;
      }
@@ -1030,7 +1037,7 @@ index 7d9d4eb..ab72474 100644
      return 0;
  }
  
-@@ -1323,6 +1759,15 @@ bool runtime_menu_key_input(SDL_Scancode scancode,
+@@ -1323,6 +1762,15 @@ bool runtime_menu_key_input(SDL_Scancode scancode,
  bool runtime_menu_controller_input(SDL_GameControllerButton button,
                                     RecompRuntimeUiInput* input) {
      if (!input) return false;
@@ -1046,7 +1053,7 @@ index 7d9d4eb..ab72474 100644
      switch (button) {
          case SDL_CONTROLLER_BUTTON_START:
              *input = RECOMP_RUNTIME_UI_INPUT_TOGGLE;
-@@ -1456,6 +1901,49 @@ void destroy_presentation(FrontendPresentation& presentation) {
+@@ -1456,6 +1904,49 @@ void destroy_presentation(FrontendPresentation& presentation) {
      presentation.windows[1] = nullptr;
  }
  
@@ -1096,7 +1103,7 @@ index 7d9d4eb..ab72474 100644
  SDL_Renderer* create_renderer(SDL_Window* window) {
  #if defined(NDS_HAVE_SDL3)
      // Driver order is NOT left to SDL3's default here. SDL3 orders its Windows
-@@ -1518,6 +2006,16 @@ SDL_Window* create_window(const char* title, int x, int y, int w, int h,
+@@ -1518,6 +2009,16 @@ SDL_Window* create_window(const char* title, int x, int y, int w, int h,
          SDL_SetWindowPosition(window, x, y);
      return window;
  #else
@@ -1113,7 +1120,7 @@ index 7d9d4eb..ab72474 100644
      return SDL_CreateWindow(title, x, y, w, h, static_cast<uint32_t>(flags));
  #endif
  }
-@@ -1778,6 +2276,18 @@ bool create_presentation(const NdsFrontendOptions& options,
+@@ -1778,6 +2279,18 @@ bool create_presentation(const NdsFrontendOptions& options,
      const int first_height = presentation.separate
          ? kScreenHeight * kWindowScale
          : kScreenHeight * 2 * kWindowScale;
@@ -1132,7 +1139,7 @@ index 7d9d4eb..ab72474 100644
      const uint64_t top_window_flags =
          SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI |
          (presentation.gl_top
-@@ -1891,15 +2401,23 @@ bool create_presentation(const NdsFrontendOptions& options,
+@@ -1891,15 +2404,23 @@ bool create_presentation(const NdsFrontendOptions& options,
              !presentation.separate && screen == 0
                  ? kScreenHeight * 2 : kScreenHeight;
          if (screen == 0 || presentation.separate) {
@@ -1157,7 +1164,7 @@ index 7d9d4eb..ab72474 100644
  #endif
          }
          presentation.textures[screen] = SDL_CreateTexture(
-@@ -2077,6 +2595,39 @@ struct OwnedPresentationFrame {
+@@ -2077,6 +2598,80 @@ struct OwnedPresentationFrame {
  };
  #endif
  
@@ -1194,10 +1201,51 @@ index 7d9d4eb..ab72474 100644
 +}
 +#endif
 +
++#if defined(__SWITCH__) && !defined(NDS_HAVE_SDL3)
++// MPH-nx native12: L3 (left stick click) saves both DS screens, stacked and
++// 3x enlarged, as /switch/mph-nx/captures/cap-NNN.bmp (for menu mockups).
++bool g_nx_capture_req = false;
++char g_nx_capture_msg[64] = "";
++uint64_t g_nx_capture_msg_until = 0;
++static void nx_write_capture(const uint32_t* top, int top_w, const uint32_t* bottom, int bottom_w) {
++    static const int kS = 3;
++    const int w = 256 * kS, h = 384 * kS;
++    mkdir("/switch/mph-nx/captures", 0777);
++    char path[96];
++    unsigned n = 1;
++    for (; n < 10000; ++n) {
++        std::snprintf(path, sizeof path, "/switch/mph-nx/captures/cap-%03u.bmp", n);
++        FILE* t = std::fopen(path, "rb");
++        if (!t) break;
++        std::fclose(t);
++    }
++    FILE* f = std::fopen(path, "wb");
++    if (!f) { std::snprintf(g_nx_capture_msg, sizeof g_nx_capture_msg, "Capture failed"); return; }
++    const uint32_t img = static_cast<uint32_t>(w) * h * 4;
++    uint8_t hdr[54] = {'B', 'M'};
++    auto put32 = [&](int o, uint32_t v) { for (int i = 0; i < 4; ++i) hdr[o + i] = (v >> (8 * i)) & 0xFF; };
++    put32(2, 54 + img); put32(10, 54); put32(14, 40); put32(18, w);
++    put32(22, static_cast<uint32_t>(-h));   // top-down rows
++    hdr[26] = 1; hdr[28] = 32; put32(34, img);
++    std::fwrite(hdr, 1, 54, f);
++    std::vector<uint32_t> row(w);
++    for (int y = 0; y < 384; ++y) {
++        const uint32_t* src = y < 192 ? top + y * top_w + (top_w - 256) / 2
++                                      : bottom + (y - 192) * bottom_w + (bottom_w - 256) / 2;
++        for (int x = 0; x < 256; ++x)
++            for (int k = 0; k < kS; ++k) row[x * kS + k] = src[x] | 0xFF000000u;
++        for (int k = 0; k < kS; ++k) std::fwrite(row.data(), 4, w, f);
++    }
++    std::fclose(f);
++    std::snprintf(g_nx_capture_msg, sizeof g_nx_capture_msg, "Saved capture %03u", n);
++    std::fprintf(stderr, "[mph-nx] %s capture saved: %s\n", nx_now(), path);
++}
++#endif
++
  PresentationTicks present_screens(FrontendPresentation& presentation,
                                    const uint32_t* top_pixels,
                                    int top_width,
-@@ -2141,8 +2692,80 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
+@@ -2141,8 +2736,88 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
  #endif
          return ticks;
      }
@@ -1207,6 +1255,12 @@ index 7d9d4eb..ab72474 100644
      top_pixels = runtime_menu_overlay(
          runtime_ui, top_pixels, top_width, kScreenHeight);
 +#if defined(__SWITCH__) && defined(MPHNX_DEKO3D) && !defined(NDS_HAVE_SDL3)
++    if (g_nx_capture_req) {
++        g_nx_capture_req = false;
++        if (nx_top_before_menu && bottom_pixels)
++            nx_write_capture(nx_top_before_menu, top_width, bottom_pixels, bottom_width);
++        g_nx_capture_msg_until = SDL_GetTicks64() + 2000;
++    }
 +    if (g_nx_deko_present) {
 +        const bool nx_menu_open = top_pixels != nx_top_before_menu;
 +        NxRect top_rect{400, 0, 480, 360}, bottom_rect{400, 360, 480, 360};
@@ -1231,6 +1285,8 @@ index 7d9d4eb..ab72474 100644
 +        f.cursor_y = virtual_stylus_y;
 +        f.hud_text = (g_nx_show_speed && g_nx_speed_text[0]) ? g_nx_speed_text : nullptr;
 +        f.notice = savestate_notice;
++        if (!f.notice && g_nx_capture_msg[0] && SDL_GetTicks64() < g_nx_capture_msg_until)
++            f.notice = g_nx_capture_msg;
 +        f.glyph = notice_glyph;
 +        // Resolution scaler: compose the top screen on the GPU at render size
 +        // when the 2D engine could describe this frame (game 3D under text
@@ -1278,7 +1334,7 @@ index 7d9d4eb..ab72474 100644
      uint64_t start = SDL_GetPerformanceCounter();
      SDL_UpdateTexture(presentation.textures[0], nullptr, top_pixels,
                        top_width * sizeof(uint32_t));
-@@ -2152,6 +2775,47 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
+@@ -2152,6 +2827,47 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
      if (!presentation.separate) {
          SDL_Renderer* renderer = presentation.renderers[0];
          start = SDL_GetPerformanceCounter();
@@ -1326,7 +1382,7 @@ index 7d9d4eb..ab72474 100644
          SDL_SetRenderDrawColor(renderer, 20, 20, 20, 255);
          SDL_RenderClear(renderer);
          const SDL_Rect top_rect{
-@@ -2169,6 +2833,9 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
+@@ -2169,6 +2885,9 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
                                  virtual_stylus_x, virtual_stylus_y);
          draw_savestate_notice(renderer, bottom_rect, savestate_notice);
          ticks.draw += SDL_GetPerformanceCounter() - start;
@@ -1336,7 +1392,7 @@ index 7d9d4eb..ab72474 100644
          start = SDL_GetPerformanceCounter();
          SDL_RenderPresent(renderer);
          ticks.swap += SDL_GetPerformanceCounter() - start;
-@@ -2403,6 +3070,13 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -2403,6 +3122,13 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
      // rate directly; the sub-sample remainder is absorbed by the bounded queue
      // instead of producing a roughly once-per-second underrun at 32768 Hz.
      want.freq = kAudioFrequency;
@@ -1350,7 +1406,7 @@ index 7d9d4eb..ab72474 100644
      want.format = AUDIO_S16SYS;
      want.channels = 2;
  #if !defined(NDS_HAVE_SDL3)
-@@ -2446,6 +3120,19 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -2446,6 +3172,19 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
          options.virtual_stylus.enabled && !mph_prime_controls_available;
      MphPrimeBindingSet mph_prime_bindings{};
      MphPadBindingSet mph_pad_bindings{};
@@ -1370,7 +1426,7 @@ index 7d9d4eb..ab72474 100644
      if (mph_prime_controls_available) {
          mph_prime_bindings = make_mph_prime_bindings(options.mph_bindings);
          mph_pad_bindings = make_mph_pad_bindings(options.mph_pad_bindings);
-@@ -2543,6 +3230,80 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -2543,6 +3282,80 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
      runtime_menu_config.items = runtime_menu_items;
      runtime_menu_config.item_count =
          sizeof(runtime_menu_items) / sizeof(runtime_menu_items[0]);
@@ -1451,7 +1507,7 @@ index 7d9d4eb..ab72474 100644
      runtime_menu_config.callbacks.context = &runtime_menu_state;
      runtime_menu_config.callbacks.get_value = runtime_menu_get_value;
      runtime_menu_config.callbacks.set_value = runtime_menu_set_value;
-@@ -2552,6 +3313,10 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -2552,6 +3365,10 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
      runtime_menu_config.theme = "nds";
      runtime_menu_config.accept_label = "A / Enter";
      runtime_menu_config.back_label = "B / Backspace";
@@ -1462,7 +1518,7 @@ index 7d9d4eb..ab72474 100644
      RecompRuntimeUi* runtime_ui =
          recomp_runtime_ui_create(&runtime_menu_config);
      if (!runtime_ui) {
-@@ -2561,6 +3326,14 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -2561,6 +3378,14 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
      bool mouse_down = false;
      bool touch_release_pending = false;
      uint32_t touch_frames_held = 0;
@@ -1477,7 +1533,7 @@ index 7d9d4eb..ab72474 100644
      int64_t relative_delta_x = 0;
      int64_t relative_delta_y = 0;
      uint64_t relative_direct_writes = 0;
-@@ -3257,9 +4030,210 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3257,9 +4082,188 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                  relative_mouse_selftest_stage = 10;
              }
          }
@@ -1555,31 +1611,9 @@ index 7d9d4eb..ab72474 100644
 +                                 (g_nx_arm7_lead_rounds - last_lead) / fr,
 +                                 (g_nx_divs - last_divs) / fr, g_nx_fast_sched ? 1 : 0,
 +                                 g_nx_deko_late_frames, g_nx_deko_present ? "deko3d" : "sdl");
-+                    {   // MPH-nx native11: clocks actually running, and where the
-+                        // emulation thread's time goes (sampled, ms per frame).
++                    {   // MPH-nx native11: clocks actually running.
 +                        std::fprintf(stderr, "[mph-nx] %s clocks: cpu %u MHz gpu %u MHz\n",
 +                                     nx_now(), nx_clocks_cpu_mhz(), nx_clocks_gpu_mhz());
-+                        static NdsEmuProfile lp{};
-+                        NdsEmuProfile p{};
-+                        nds_emu_profile(&p);
-+                        const double sr = static_cast<double>(p.sampled_rounds - lp.sampled_rounds);
-+                        const double rr = static_cast<double>(p.rounds - lp.rounds);
-+                        if (sr > 0) {
-+                            const double scale = rr / sr;
-+                            const double nspt = nds_dispatch_timing_ns_per_tick();
-+                            char b[1024]; int o = 0;
-+                            double total = 0;
-+                            for (int i = 0; i < NDS_EMU_BUCKET_COUNT; ++i) {
-+                                double ms = (p.ticks[i] - lp.ticks[i]) * nspt / 1e6 / fr;
-+                                if (!nds_emu_bucket_is_exact(static_cast<NdsEmuBucket>(i))) ms *= scale;
-+                                total += ms;
-+                                if (ms >= 0.01 && o < (int)sizeof b - 48)
-+                                    o += std::snprintf(b + o, sizeof b - o, " %s=%.2f",
-+                                                       nds_emu_bucket_name(static_cast<NdsEmuBucket>(i)), ms);
-+                            }
-+                            std::fprintf(stderr, "[mph-nx] %s time per frame (ms): total=%.2f%s\n", nx_now(), total, o ? b : "");
-+                        }
-+                        lp = p;
 +                    }
 +                    last_rounds = g_nx_rounds; last_lead = g_nx_arm7_lead_rounds;
 +                    last_divs = g_nx_divs; log_frames_mark = frames_now;
@@ -1688,7 +1722,7 @@ index 7d9d4eb..ab72474 100644
              if (event.type == SDL_QUIT) {
                  release_relative_mouse();
                  running = false;
-@@ -3451,6 +4425,13 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3451,6 +4455,19 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                  clear_virtual_stylus();
                  publish_keys();
              }
@@ -1698,11 +1732,17 @@ index 7d9d4eb..ab72474 100644
 +                continue;
 +            if (nx_cursor_active && event.type == SDL_CONTROLLERBUTTONDOWN)
 +                continue;
++            if ((event.type == SDL_CONTROLLERBUTTONDOWN || event.type == SDL_CONTROLLERBUTTONUP) &&
++                sdl_controller_button(event) == SDL_CONTROLLER_BUTTON_LEFTSTICK &&
++                !runtime_menu_open()) {
++                if (event.type == SDL_CONTROLLERBUTTONDOWN) g_nx_capture_req = true;
++                continue;
++            }
 +#endif
              if (event.type == SDL_CONTROLLERBUTTONDOWN ||
                  event.type == SDL_CONTROLLERBUTTONUP) {
                  RecompRuntimeUiInput menu_input{};
-@@ -3764,10 +4745,20 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3764,10 +4781,20 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                          publish_keys();
                      }
                  };
@@ -1723,7 +1763,7 @@ index 7d9d4eb..ab72474 100644
              }
  
              if (!menu_open && virtual_stylus_available) {
-@@ -3818,7 +4809,11 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3818,7 +4845,11 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                  }
              }
  
@@ -1736,7 +1776,7 @@ index 7d9d4eb..ab72474 100644
                  // Right stick -> camera aim; triggers act as bindable
                  // pseudo-buttons (defaults: RT shoot, LT scan-fire).
                  const float rx = SDL_GameControllerGetAxis(
-@@ -3989,6 +4984,85 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3989,6 +5020,85 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                      nds_set_touch(128, 96, true);
              }
          }
@@ -1822,7 +1862,7 @@ index 7d9d4eb..ab72474 100644
          if (options.custom_gamepad_bindings) {
              // Button events handle digital bindings; poll signed axes here.
              // Each row has one source, so clearing an axis row cannot release
-@@ -4186,8 +5260,9 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -4186,8 +5296,9 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                  presentation, blend_cache.blended[0].data(), top_width,
                  blend_cache.blended[1].data(), bottom_width,
                  runtime_ui,
@@ -1834,7 +1874,7 @@ index 7d9d4eb..ab72474 100644
                  savestate_notice.empty() ? nullptr : savestate_notice.c_str());
              if (!synthetic_ticks.ok) {
                  compute_failed = true;
-@@ -4210,14 +5285,18 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -4210,14 +5321,18 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
              presentation, top_pixels, top_width,
              bottom_pixels, bottom_width,
              runtime_ui,
@@ -3060,7 +3100,7 @@ index 45b561e..2915312 100644
 +#endif
  }
 diff --git a/runner/src/main.cpp b/runner/src/main.cpp
-index 4375eb7..498c35f 100644
+index 4375eb7..9738dfc 100644
 --- a/runner/src/main.cpp
 +++ b/runner/src/main.cpp
 @@ -6,6 +6,7 @@
@@ -3071,7 +3111,7 @@ index 4375eb7..498c35f 100644
  #include <algorithm>
  #include <cstdint>
  #include <cstdio>
-@@ -148,15 +149,78 @@ extern "C" const unsigned g_dispatch_fw_arm7_pictochat_room_a_len;
+@@ -148,14 +149,77 @@ extern "C" const unsigned g_dispatch_fw_arm7_pictochat_room_a_len;
  #endif
  #endif
  
@@ -3110,8 +3150,8 @@ index 4375eb7..498c35f 100644
      return std::vector<uint8_t>((std::istreambuf_iterator<char>(f)),
                                  std::istreambuf_iterator<char>());
 +#endif
- }
- 
++}
++
 +#if defined(__SWITCH__)
 +// The cartridge SHA-1 only depends on the file. Cache it beside the ROM,
 +// keyed by size and modification time, so later launches skip the hash.
@@ -3144,12 +3184,11 @@ index 4375eb7..498c35f 100644
 +        }
 +    }
 +    return sha;
-+}
+ }
 +#endif
-+
+ 
  bool verify(const std::vector<uint8_t>& data, const char* want,
              const char* label) {
-     if (data.empty()) { std::fprintf(stderr, "[load] %s: missing/empty\n", label); return false; }
 @@ -353,7 +417,9 @@ int main(int argc, char** argv) {
      // savestate load as never-happened during the 2026-08-31 Kanden A/B and
      // cost the session an hour of phantom debugging. Unbuffered is what the C
@@ -3160,19 +3199,7 @@ index 4375eb7..498c35f 100644
      // Calibrate the dispatch-cost tick source before anything can dispatch.
      // It is lazily self-calibrating as a fallback, but the lazy path would
      // spend its calibration spin inside whichever dispatch happened to be
-@@ -361,6 +427,11 @@ int main(int argc, char** argv) {
-     nds_dispatch_timing_init();
-     // Shares dispatch_timing's tick calibration; called here so the first
-     // measured scheduler round is not the one paying for it.
-+#if defined(__SWITCH__)
-+    // MPH-nx native11: sample 1 scheduler round in 31 for the 10 s time
-+    // breakdown in the log (where the emulation thread's time goes).
-+    if (!std::getenv("NDS_PROFILE_EMU")) setenv("NDS_PROFILE_EMU", "31", 1);
-+#endif
-     nds_emu_profile_init();
-     // Wiimmfi: Winsock (Windows only) MUST be initialized before ANY
-     // Winsock API call anywhere in this process -- including WSAPoll
-@@ -1746,7 +1817,11 @@ int main(int argc, char** argv) {
+@@ -1746,7 +1812,11 @@ int main(int argc, char** argv) {
              std::fprintf(stderr, "refusing to start: cartridge image is missing or truncated\n");
              return 1;
          }
@@ -3184,7 +3211,7 @@ index 4375eb7..498c35f 100644
          std::fprintf(stderr, "[load] cartridge: %zu bytes, SHA-1 %s\n",
                       rom.size(), rom_sha1.c_str());
          if (!frontend_options.expected_rom_sha1.empty() &&
-@@ -1976,8 +2051,12 @@ int main(int argc, char** argv) {
+@@ -1976,8 +2046,12 @@ int main(int argc, char** argv) {
                             cli_live_overlay_cache.c_str(),
                             rom_sha1.c_str());
      live_overlay_set_transfer_trace(cli_live_overlay_transfer_trace);
@@ -3198,7 +3225,7 @@ index 4375eb7..498c35f 100644
          frontend_options.relative_mouse_touch;
      frontend_options.relative_mouse_direct_aim = mph_mouse_aim_policy;
      frontend_options.mph_prime_controls =
-@@ -2213,6 +2292,31 @@ int main(int argc, char** argv) {
+@@ -2213,6 +2287,31 @@ int main(int argc, char** argv) {
                                g_dispatch_fw_arm7_pictochat_room_a_len,
                                0x00000000u);
  #endif
