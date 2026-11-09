@@ -39,5 +39,5 @@ SCREENS = [
  # The game draws a red ring on the highlighted file; Switch A taps that file (DS A here opens Movies).
  dict(name='files', kind='files', src='002', keys=[(8,160,31,184),(215,156,240,180)], back=None, default='fileB',
       targets=[('fileA',(14,38,82,106),False),('fileB',(94,38,162,106),False),('fileC',(174,38,242,106),False)]),
- dict(name='title', kind='game', src='001', keys=[(8,160,31,184)], back=None, default=None, targets=[]),
+ dict(name='title', kind='game', src='001', keys=[(8,160,31,184),(216,110,240,128)], back=None, default=None, targets=[]),
 ]
