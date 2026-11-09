@@ -523,6 +523,7 @@ int main(int argc, char** argv) {
 #else
     add("--save-path"); add(app + "/mph.sav");
 #endif
+    add("--savestate-dir"); add(app + "/states");   // native19: save states (per ROM SHA-1 below)
     add("--firmware-state-path"); add(app + "/firmware-state.bin");
     add("--runtime-settings-path"); add(app + "/runtime-settings.ini");
     // Game code model, chosen in the MPH-nx menu (applies at launch):

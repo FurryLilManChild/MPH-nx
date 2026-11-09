@@ -4,6 +4,8 @@
 //                       as a reference
 //   NR_DUMP=a:n,a:n     at exit, print n words from each guest address a
 //   NR_SHOT=file.ppm    at exit, write both screens (top above bottom)
+//   NR_STATE_SAVE=file@cycles  save a state once ARM9 time passes cycles
+//   NR_STATE_LOAD=file@cycles  load a state once ARM9 time passes cycles
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -18,6 +20,9 @@ const uint32_t* nds_gpu2d_framebuffer(int screen);
 
 extern unsigned long long g_nx_dma_blocks, g_nx_dma_block_units;   // io.cpp (native9)
 extern bool g_nx_dma_block;
+#include "savestate.h"
+#include "../native/nr_state.h"
+extern void (*g_nx_host_round_hook)(uint64_t arm9_cycles);
 
 namespace {
 void shot_at_exit() {
@@ -72,6 +77,37 @@ void dump_at_exit() {
         p = q + 1;
     }
 }
+struct StateStep { std::string path; unsigned long long at = 0; bool done = true; };
+StateStep g_save_step, g_load_step;
+StateStep parse_step(const char* v) {
+    StateStep st;
+    if (!v) return st;
+    std::string s(v);
+    const size_t at = s.find('@');
+    st.path = s.substr(0, at);
+    st.at = at == std::string::npos ? 0 : std::strtoull(s.substr(at + 1).c_str(), nullptr, 0);
+    st.done = false;
+    return st;
+}
+void round_hook(uint64_t cyc) {
+    const NdsSavestateIdentity id{"mphnx-host", "a8679d4f8dcb445cbe946a424241ef44901b0caf"};
+    static unsigned waits = 0;
+    if (!g_save_step.done && cyc >= g_save_step.at) {
+        if (!nx_state_ready()) { ++waits; return; }
+        std::string err;
+        const bool ok = nx_state_save(g_save_step.path, id, &err);
+        std::fprintf(stderr, "[state] save at %llu cycles (%u rounds waited): %s %s\n",
+                     (unsigned long long)cyc, waits, ok ? "ok" : "FAILED", err.c_str());
+        g_save_step.done = true;
+    }
+    if (!g_load_step.done && cyc >= g_load_step.at) {
+        std::string err;
+        const bool ok = nx_state_load(g_load_step.path, id, &err);
+        std::fprintf(stderr, "[state] load at %llu cycles: %s %s\n", (unsigned long long)cyc,
+                     ok ? "ok" : "FAILED", err.c_str());
+        g_load_step.done = true;
+    }
+}
 struct Install {
     Install() {
         const char* off = std::getenv("NR_DISABLE");
@@ -79,6 +115,9 @@ struct Install {
         if (const char* fc = std::getenv("NR_FASTCARD")) g_nx_fast_card = fc[0] == '1';
         if (std::getenv("NR_DMA_BLOCK_OFF")) g_nx_dma_block = false;
         std::atexit(dump_at_exit);
+        g_save_step = parse_step(std::getenv("NR_STATE_SAVE"));
+        g_load_step = parse_step(std::getenv("NR_STATE_LOAD"));
+        if (!g_save_step.done || !g_load_step.done) g_nx_host_round_hook = round_hook;
     }
 } g_install;
 }

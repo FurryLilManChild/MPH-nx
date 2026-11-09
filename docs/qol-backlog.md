@@ -75,6 +75,7 @@ in-game speed work is done.
   the defaults on first start of the release build.
 
 ## 6. Save states
+- native19: built on the engine's states with a park check and coroutine restart; cloud test passes (identical frames and RAM after save and after load).
 - Mark (2026-11-09): wanted if doable. Yes, with care.
 - The engine has save states (savestate.cpp, slots), made for its dispatcher
   model where CPU state is in memory between slices. In MPH-nx both CPUs are

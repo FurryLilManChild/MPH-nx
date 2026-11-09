@@ -160,6 +160,9 @@ bool DekoRenderer::InitRest()
 
 void DekoRenderer::Reset(GPU& gpu)
 {
+    // native19: a state load resets the renderer; let frames still on the
+    // GPU finish before their textures are freed.
+    if (NxDeko::EmuQueue) NxDeko::EmuQueue.waitIdle();
     for (u32 i = 0; i < 8; i++)
     {
         for (u32 j = 0; j < 8; j++)

@@ -30,6 +30,8 @@ constexpr uint16_t kTypeListHead = 27, kTypeEnemy = 23;
 constexpr float kRange = 48.0f;           // game units (fx32 / 4096)
 constexpr float kConeCos = 0.70f;         // about 45 degrees off the view
 constexpr int kMaxWalk = 600;
+constexpr float kGain = 100.0f;           // aim counts per radian (about one count per 0.6 degree)
+constexpr float kMaxStep = 6.0f;          // counts per frame: caps the turn speed
 
 const uint8_t* g_ram = nullptr;
 uint32_t g_len = 0;
@@ -50,7 +52,6 @@ struct State {
     uint32_t target = 0;        // locked entity address
     bool spent = false;         // target lost while held: wait for a new press
     // adaptive aim gain (counts per radian), per axis, with sign
-    float gain[2] = {110.0f, 110.0f};
     float sign_acc[2] = {0.0f, 0.0f};
     float last_cmd[2] = {0.0f, 0.0f};
     float last_ang[2] = {0.0f, 0.0f};
@@ -59,6 +60,7 @@ struct State {
     // stats
     unsigned locks = 0, lost = 0, frames = 0, enemies_seen = 0;
     float last_err = 0.0f;
+    int trace = 0;               // frames of per-lock trace left
 } g;
 
 bool find_head() {
@@ -159,6 +161,7 @@ NxLockOut nx_lockon_frame(bool held) {
         if (g.target) {
             ++g.locks;
             g.have_last = false;
+            g.trace = 60;
             std::fprintf(stderr, "[mph-nx] lockon: locked %08X (%u enemies in room)\n",
                          (unsigned)g.target, g.enemies_seen);
         } else {
@@ -180,20 +183,15 @@ NxLockOut nx_lockon_frame(bool held) {
     const float err[2] = {wrap(ang_want[0] - ang_face[0]), ang_want[1] - ang_face[1]};
     g.last_err = std::sqrt(err[0] * err[0] + err[1] * err[1]);
 
-    // Learn how many aim counts turn the view by one radian (and which way)
-    // from what the last command did, so no sensitivity setting or axis
-    // direction has to be known in advance.
+    // native19: fixed, gentle speed. Only the direction of each axis is
+    // learned (from how the view moved after a command), and it freezes once
+    // it is clear, so a lagging camera cannot make the lock push harder and
+    // harder (native18 swung around).
     for (int a = 0; a < 2; ++a) {
-        if (g.have_last && std::fabs(g.last_cmd[a]) >= 2.0f) {
+        if (g.have_last && std::fabs(g.last_cmd[a]) >= 1.0f && std::fabs(g.sign_acc[a]) < 4.0f) {
             const float moved = wrap(ang_face[a] - g.last_ang[a]);
-            if (std::fabs(moved) > 0.003f) {
-                const float r = g.last_cmd[a] / moved;
-                g.sign_acc[a] = g.sign_acc[a] * 0.8f + (r > 0 ? 1.0f : -1.0f);
-                const float m = std::fabs(r);
-                if (m > 15.0f && m < 4000.0f) g.gain[a] = g.gain[a] * 0.85f + m * 0.15f;
-                if (g.gain[a] < 40.0f) g.gain[a] = 40.0f;
-                if (g.gain[a] > 600.0f) g.gain[a] = 600.0f;
-            }
+            if (std::fabs(moved) > 0.002f)
+                g.sign_acc[a] += ((g.last_cmd[a] / moved) > 0 ? 1.0f : -1.0f);
         }
         g.last_ang[a] = ang_face[a];
     }
@@ -201,14 +199,21 @@ NxLockOut nx_lockon_frame(bool held) {
     float cmd[2];
     for (int a = 0; a < 2; ++a) {
         const float sgn = g.sign_acc[a] < 0.0f ? -1.0f : 1.0f;
-        float c = err[a] * g.gain[a] * sgn * 0.25f + g.rem[a];   // close a quarter of the gap per frame
-        if (c > 14.0f) c = 14.0f;
-        if (c < -14.0f) c = -14.0f;
+        const float e = std::fabs(err[a]) < 0.008f ? 0.0f : err[a];       // half a degree dead zone
+        float c = e * kGain * sgn * 0.2f + g.rem[a];
+        if (c > kMaxStep) c = kMaxStep;
+        if (c < -kMaxStep) c = -kMaxStep;
         const float ci = std::trunc(c);
         g.rem[a] = c - ci;
         cmd[a] = ci;
         g.last_cmd[a] = ci;
     }
+    if (g.trace > 0 && (g.trace % 4) == 0)
+        std::fprintf(stderr, "[mph-nx] lockon trace: err yaw %.1f pitch %.1f deg  cmd %d %d  view yaw %.1f pitch %.1f  dir %s%s\n",
+                     err[0] * 57.2958f, err[1] * 57.2958f, (int)cmd[0], (int)cmd[1],
+                     ang_face[0] * 57.2958f, ang_face[1] * 57.2958f,
+                     g.sign_acc[0] < 0 ? "-" : "+", g.sign_acc[1] < 0 ? "-" : "+");
+    if (g.trace > 0) --g.trace;
     ++g.frames;
     out.active = true;
     out.dx = (int32_t)cmd[0];
@@ -217,9 +222,8 @@ NxLockOut nx_lockon_frame(bool held) {
 }
 
 void nx_lockon_stats(char* buf, int n) {
-    std::snprintf(buf, n, "lockon: locks %u lost %u frames %u  gain x %.0f%s y %.0f%s  last error %.1f deg  list %08X",
-                  g.locks, g.lost, g.frames,
-                  g.gain[0], g.sign_acc[0] < 0 ? " (-)" : "", g.gain[1], g.sign_acc[1] < 0 ? " (-)" : "",
+    std::snprintf(buf, n, "lockon: locks %u lost %u frames %u  direction x %+.0f y %+.0f  last error %.1f deg  list %08X",
+                  g.locks, g.lost, g.frames, g.sign_acc[0], g.sign_acc[1],
                   g.last_err * 57.2958f, (unsigned)g.head);
     g.locks = g.lost = g.frames = 0;
 }

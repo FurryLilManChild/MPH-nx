@@ -2,6 +2,14 @@
 
 Newest first.
 
+## 2026-11-09: native18 lock-on results; switch-native19 prepared (save states, steadier lock-on)
+
+- native18 (Mark's video): lock engages (entity list found), but the view swings and climbs. The self-tuning aim gain had no protection against a camera that answers a frame or two late. Logs not in yet.
+- Lock-on, native19: fixed gentle speed (100 counts per radian, a fifth of the gap per frame, at most 6 counts a frame, half-degree dead zone); only each axis's direction is learned and it freezes once clear; a trace line every 4 frames for the first second of each lock.
+- Save states (QoL item 6), switch/native/nr_state.cpp: the engine's own states plus two native rules. A state is taken only while both CPUs are parked at a service point (all guest registers in the CPU state; a DMA-stall yield inside a store is not parked); after a load both native coroutines restart at the loaded PCs (fresh host stacks, page tables, overlay identification and write provenance redone), as a thread-switch redirect does. The deko3d renderer waits for the GPU before its reset frees textures.
+- Cloud test (switch/host, NR_STATE_SAVE / NR_STATE_LOAD): saving at 2.0e9 cycles leaves the run identical to a plain run; loading the 2.0e9, 2.6e9 and 1.3e9 states (including loading back in time, at 2.5e9) then running to 3.0e9 gives the same final screens (the Sylux intro, 3D on both screens) and the same RAM as the plain run. About 13 MB per state.
+- Port menu: Save states section (Slot 1 to 4, Save state, Load state); the main loop does the request between frames once both CPUs are parked (gives up after 120 frames). States go to /switch/mph-nx/states/<ROM SHA-1>/ and belong to the build.
+
 ## 2026-11-09: switch-native17 and native18 (HUD tweaks; lock-on)
 
 - native16 (Mark): "phenomenal first go at single screen"; D-pad weapons work. Asked for a bigger weapon section and no overlap between the radar and the game's morph-ball boost icon.

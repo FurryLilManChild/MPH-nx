@@ -51,7 +51,7 @@ target_compile_options(mphnx_native_game PRIVATE -O1 -g0 -w -fno-strict-aliasing
 # Host debug: function-entry log (NR_CALLTRACE_FROM decides when it prints).
 target_compile_definitions(mphnx_native_game PRIVATE NR_CALLTRACE=1)
 target_sources(nds_runner PRIVATE "${_nat}/nr_runtime.cpp" "${_nat}/nr_runtime7.cpp" "${_nat}/nr_coro.c"
-    "${_nat}/nr_coro_switch.S" "${CMAKE_CURRENT_SOURCE_DIR}/host_install.cpp")
+    "${_nat}/nr_coro_switch.S" "${_nat}/nr_state.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/host_install.cpp")
 target_include_directories(nds_runner PRIVATE "${_nat}" "${MPHNX_NATIVE_DIR}")
 target_compile_definitions(nds_runner PRIVATE MPHNX_NATIVE=1 NR_CALLTRACE=1)
 target_link_libraries(nds_runner PRIVATE mphnx_native_game)

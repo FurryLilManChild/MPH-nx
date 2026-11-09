@@ -144,6 +144,12 @@ static void yield7() {
     nr_coro_switch(&g_arm7_ctx, &g_sched_ctx);
 }
 
+// native19 save states (see nr_runtime.cpp).
+static bool g_parked = true;
+static bool g_restart = false;
+extern "C" bool nr7_state_parked(void) { return !g_started || g_parked; }
+extern "C" void nr7_state_restart(void) { if (g_started) g_restart = true; }
+
 static void run(uint32_t key);
 static void coro_main(void*) {
     run(g_boot_pc);
@@ -160,6 +166,16 @@ extern "C" void nr7_resume(void) {
         nr_coro_init(&g_arm7_ctx, g_stack.data(), g_stack.size(), coro_main, nullptr);
         std::fprintf(stderr, "[native7] ARM7 native start at %08X (%u entries)\n",
                      g_boot_pc, nr7_tab_count);
+        g_parked = false;
+    } else if (g_restart) {
+        g_restart = false;
+        g_my_redirect = 0;
+        g_my_q = (g_cpu.cpsr >> 27) & 1u;
+        remap();
+        g_boot_pc = g_cpu.R[15] | ((g_cpu.cpsr & CPSR_T_BIT) ? 1u : 0u);
+        nr_coro_init(&g_arm7_ctx, g_stack.data(), g_stack.size(), coro_main, nullptr);
+        g_parked = false;
+        std::fprintf(stderr, "[native7] ARM7 restarted at %08X (state loaded)\n", g_boot_pc);
     }
     const uint32_t keep_redirect = nr_redirect, keep_q = g_nr_q;
     nr_redirect = g_my_redirect; g_nr_q = g_my_q;
@@ -226,7 +242,9 @@ extern "C" void nr7_service(void) {
     const uint32_t resume = g_cpu.R[15];
     g_last_pc = resume | ((g_cpu.cpsr & CPSR_T_BIT) ? 1u : 0u);
     if (runtime_should_yield_slow()) {
+        g_parked = true;
         yield7();
+        g_parked = false;
         g_nds_unwinding = 0;
     }
     if (!(g_cpu.cpsr & CPSR_I_BIT) && nds_irq_pending(1))

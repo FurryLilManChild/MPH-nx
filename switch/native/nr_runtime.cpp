@@ -228,6 +228,16 @@ static void nr_yield() {
     nr_coro_switch(&g_arm9_ctx, &g_sched_ctx);
 }
 
+// native19 save states: the ARM9 is "parked" when it last yielded from a
+// service point, where every guest register is in g_cpu (a DMA-stall yield
+// inside a store keeps registers in the generated code's C locals). A state
+// is only taken while parked; loading one restarts the coroutine at the
+// saved PC, as a thread-switch redirect does.
+static bool g_nr_parked = true;
+static bool g_nr_restart = false;
+extern "C" bool nr_state_parked(void) { return !g_arm9_started || g_nr_parked; }
+extern "C" void nr_state_restart(void) { if (g_arm9_started) g_nr_restart = true; }
+
 static void nr_take_irq(uint32_t resume);
 static void nr_irq_exit();
 extern const uint32_t NR_IRQ_RET;
@@ -250,7 +260,9 @@ extern "C" void nr_service(void) {
     if (runtime_should_yield_slow()) {
         // Slice over, CPU halted, DMA owns the bus, or terminal: back to the
         // scheduler. It resumes us at the next ARM9 slice.
+        g_nr_parked = true;
         nr_yield();
+        g_nr_parked = false;
         g_nds_unwinding = 0;
     }
     if (!(g_cpu.cpsr & CPSR_I_BIT) && nds_irq_pending(0))
@@ -276,6 +288,23 @@ extern "C" void nr_resume_arm9(void) {
         nr_coro_init(&g_arm9_ctx, g_arm9_stack.data(), g_arm9_stack.size(), coro_main, nullptr);
         std::fprintf(stderr, "[native] ARM9 native start at %08X (%u static entries, %u overlays)\n",
                      g_boot_pc, nr_tab_static_count, nr_overlay_count);
+        g_nr_parked = false;
+    } else if (g_nr_restart) {
+        // A loaded state: the old host stack is abandoned (generated code
+        // keeps nothing there that outlives it) and the top loop starts at
+        // the saved PC; a mid-function PC runs on the fallback until the
+        // next native entry.
+        g_nr_restart = false;
+        nr_redirect = 0;
+        g_nr_q = (g_cpu.cpsr >> 27) & 1u;
+        nx_bus_mark_all_written();
+        ov_bounds();
+        nr_remap();
+        g_ov_dirty = 1;
+        g_boot_pc = g_cpu.R[15] | ((g_cpu.cpsr & CPSR_T_BIT) ? 1u : 0u);
+        nr_coro_init(&g_arm9_ctx, g_arm9_stack.data(), g_arm9_stack.size(), coro_main, nullptr);
+        g_nr_parked = false;
+        std::fprintf(stderr, "[native] ARM9 restarted at %08X (state loaded)\n", g_boot_pc);
     }
     nr_coro_switch(&g_sched_ctx, &g_arm9_ctx);
 }
