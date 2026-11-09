@@ -2,6 +2,12 @@
 
 Newest first.
 
+## 2026-11-09: switch-native13 (controller for the touch-only menus)
+
+- Mark's L3 captures (14) and slide notes: title menus and the star map already move a highlight with the stick but nothing confirms; the landed ship menu, weapon select, logbook, options, the save/exit/enter-ship pop-ups and the scan arrows are touch only. Samus freezes while scan boxes and the enter-ship prompt are up. Wanted: stick/D-pad to move, Switch A to confirm, Switch B to go back (on his layout Switch A is morph and Switch B is jump by default).
+- switch/src/nx_menunav.cpp: screens are recognised from coarse colour fingerprints of their buttons (tools/menunav/gen_menunav.py writes nx_menunav_data.h; no captured pixels are committed). On the 14 captures each screen matches only itself (best other score 0.66 against a 0.9 threshold).
+- Kinds: game-highlighted screens (title, file select) get DS A on Switch A; the star map gets a Land Ship tap; port screens and pop-ups get a yellow highlight driven by stick/D-pad, A taps it, B taps Back/No. The sensitivity slider is moved by a short drag. Presses on a recognised screen are taken from the game (releases pass). Toggle "Menu buttons". Every screen change and tap is logged.
+
 ## 2026-11-09: switch-native12 (screen captures); optimization closed
 
 - native11 (Mark): good performance at stock even at 2x. Log: stock 1020 MHz held 60 fps in game at 1x, 2x and 3x, emulation 10 to 12.5 ms a frame. The time-breakdown line did not work (about 0.3 ms reported against about 11 ms real: the 19.2 MHz system counter is too coarse for the per-region overhead subtraction); removed. Clock line kept.

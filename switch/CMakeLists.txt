@@ -18,7 +18,7 @@ endif()
 # the old target-wide define, kept at its last value: changing a target-wide
 # define recompiles the whole engine. Drop it at the next build that rebuilds
 # everything anyway.
-set(MPHNX_VERSION "switch-native12" CACHE STRING "Build label shown in logs and hbmenu")
+set(MPHNX_VERSION "switch-native13" CACHE STRING "Build label shown in logs and hbmenu")
 set(MPHNX_ENGINE_TAG "switch-native5")
 set(MPHNX_TITLE "MPH-nx" CACHE STRING "Name shown in hbmenu")
 option(MPHNX_PIE_LIBS "Compile the runner's static libraries (game banks included) as -fPIE instead of -fPIC" ON)
@@ -155,7 +155,8 @@ set_source_files_properties("${_runner_dir}/src/main.cpp"
 
 target_sources(nds_runner PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/nx_main.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/nx_platform.c")
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/nx_platform.c"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/nx_menunav.cpp")
 target_compile_definitions(nds_runner PRIVATE MPHNX_VERSION="${MPHNX_ENGINE_TAG}")
 set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/nx_main.cpp" "${NDSRECOMP_ROOT}/runner/src/frontend.cpp" TARGET_DIRECTORY nds_runner
     APPEND PROPERTY COMPILE_DEFINITIONS MPHNX_LABEL="${MPHNX_VERSION}")

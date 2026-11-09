@@ -24,6 +24,8 @@ typedef struct MphnxInput {
     int a;               // A held
     int minus;           // minus held
     float lx, ly;        // left stick, -1..1, +y is down
+    int b;               // B held (native13: menu navigation)
+    int up, down, left, right;   // D-pad held
 } MphnxInput;
 void mphnx_input_poll(MphnxInput* out);
 

@@ -16,6 +16,7 @@ in-game speed work is done.
   possible sooner.
 
 ## 2. Map the remaining second-screen items to buttons
+- native13: first version done (stick/D-pad highlight, A confirm, B back on the captured screens). More screens as Mark captures them.
 - The bottom screen has weapon select, morph ball, scan visor and so on. The
   port already makes the touch input, so a button can tap a fixed spot on the
   bottom screen. That is cheap and safe.
