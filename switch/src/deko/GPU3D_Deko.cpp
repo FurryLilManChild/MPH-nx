@@ -1461,6 +1461,7 @@ void DekoRenderer::RenderFrame(GPU& gpu)
         EmuCmdBuf.barrier(DkBarrier_Primitives, 0);
     }
     SlotScale[curSlice] = CurScale;
+    StatRendered[CurScale]++;
 
     // Flush GPU caches with the fence so the CPU sees the finished image.
     EmuCmdBuf.signalFence(FinalOutputFence[curSlice], true);
@@ -1536,7 +1537,10 @@ void DekoRenderer::ApplyScale()
 
 bool DekoRenderer::HiresOutput(uint64_t* gpuAddr, int* w, int* h)
 {
-    if (ShownSlot < 0 || !OutputWaited || SlotScale[ShownSlot] == 0) return false;
+    if (ShownSlot < 0) { StatHiresNo[0]++; return false; }
+    if (!OutputWaited) { StatHiresNo[1]++; return false; }
+    if (SlotScale[ShownSlot] == 0) { StatHiresNo[2]++; return false; }
+    StatHiresYes++;
     const int sc = SlotScale[ShownSlot];
     *gpuAddr = NxDeko::DataHeap->GpuAddr(HiresOutputMemory[ShownSlot]);
     static const int kW[5] = {256, 384, 512, 768, 1024}, kH[5] = {192, 288, 384, 576, 768};
@@ -1623,6 +1627,29 @@ void nx_deko_set_scale(int scale)
 {
     melonDS::g_nx_deko_scale_req = scale;
     if (melonDS::g_nx_deko_renderer) melonDS::g_nx_deko_renderer->RequestedScale = scale;
+}
+// native8c diagnostics
+const void* melonDS::DekoRenderer::HiresCpu()
+{
+    if (ShownSlot < 0) return nullptr;
+    return NxDeko::DataHeap->CpuAddr<void>(HiresOutputMemory[ShownSlot]);
+}
+void nx_deko_stats(char* buf, int n)
+{
+    melonDS::DekoRenderer* r = melonDS::g_nx_deko_renderer;
+    if (!r) { std::snprintf(buf, n, "none"); return; }
+    std::snprintf(buf, n, "size %d (%dx%d) rendered 1x %u 1.5x %u 2x %u 3x %u 4x %u  hires yes %u no: noslot %u notwaited %u slot1x %u  sets %d%d%d%d%d",
+                  r->CurScale, r->ScrW, r->ScrH,
+                  r->StatRendered[0], r->StatRendered[1], r->StatRendered[2], r->StatRendered[3], r->StatRendered[4],
+                  r->StatHiresYes, r->StatHiresNo[0], r->StatHiresNo[1], r->StatHiresNo[2],
+                  r->SetLoaded[0], r->SetLoaded[1], r->SetLoaded[2], r->SetLoaded[3], r->SetLoaded[4]);
+    for (int i = 0; i < 5; i++) r->StatRendered[i] = 0;
+    for (int i = 0; i < 3; i++) r->StatHiresNo[i] = 0;
+    r->StatHiresYes = 0;
+}
+const void* nx_deko_hires_cpu()
+{
+    return melonDS::g_nx_deko_renderer ? melonDS::g_nx_deko_renderer->HiresCpu() : nullptr;
 }
 // The render-size 3D image the 2D compositor is showing this frame.
 bool nx_deko_hires(uint64_t* gpuAddr, int* w, int* h)

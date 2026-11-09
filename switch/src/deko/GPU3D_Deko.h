@@ -61,7 +61,6 @@ private:
         dk::Shader ShaderDownsample;
     };
     ShaderSet Sets[5];
-    bool SetLoaded[5] = {};
     ShaderSet* S = &Sets[0];
     bool LoadSet(int si, const char* sfx);
     bool InitRest();
@@ -70,9 +69,14 @@ public:
     int RequestedScale = 0;
     int CurScale = 0;
     int ScrW = 256, ScrH = 192;
+    bool SetLoaded[5] = {};   // public for the native8c stats line
     // GPU address and size of the full-size output for the presenter
     // (packed RGB6A5, ScrW x ScrH) of the slot GetLine shows this frame.
     bool HiresOutput(uint64_t* gpuAddr, int* w, int* h);
+    // native8c diagnostics: frames rendered per size, and why HiresOutput
+    // said no (0 no shown slot, 1 not waited, 2 shown slot is 1x).
+    unsigned StatRendered[5] = {}, StatHiresNo[3] = {}, StatHiresYes = 0;
+    const void* HiresCpu();
 private:
     s32 Pos[10][2] = {};       // the current polygon's vertices at render size
 
