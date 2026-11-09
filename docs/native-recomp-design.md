@@ -93,6 +93,24 @@ Metroid Prime Hunters as a native Switch program:
 - Phase 2: HLE of the ARM7 sound and system driver (sound commands over IPC to a native
   mixer, touch and RTC answered natively). The ARM7 then costs close to nothing.
 
+### 6. Native clock (from native9)
+The frame loop is still upstream's: the ARM9 and ARM7 are stepped against each
+other in DS-cycle windows until a DS frame has passed, then the frontend waits.
+The target is that the Switch is the clock and the hardware layer only does what
+the game waits on:
+- Done in native8g/native9: frames go to the screen one per Switch refresh, and
+  the sound is played at the rate the game makes it at 60 Hz (no audio clock).
+- Next: the ARM7 leaves the cycle interleave. It runs only when the ARM9 touches
+  what they share (IPC sync and FIFO, shared WRAM, the sound registers it owns),
+  when one of its timers is due, or at the frame end, instead of every window.
+- Then: a native mixer (ARM7 sound driver HLE): sound commands from the ARM9 go
+  to a Switch mixer that the audio device pulls from, and the DS sound hardware
+  model and the ARM7 sound code drop out.
+- Then: the display model shrinks to what MPH uses (VBlank, the 2D line latch,
+  display capture), driven from the Switch refresh rather than 263 DS scanlines.
+- Same rule as for the code: every step is checked with the host boot test
+  (identical command sequence and final frame) before it reaches the Switch.
+
 ## Milestones
 
 1. ROM tools and discovery report for Rev 1 (function count, coverage of the ARM9
