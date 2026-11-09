@@ -113,6 +113,8 @@ static ClkrstSession g_cpu_session;
 static u32 g_cpu_saved_hz = 0;
 static u32 g_cpu_applied_hz = 0;
 static char g_clk_status[96] = "clocks: untouched";
+static bool g_gpu_open = false, g_gpu_tried = false;
+static ClkrstSession g_gpu_session;
 
 void nx_clocks_apply(void) {
     if (hosversionBefore(8, 0, 0)) {
@@ -139,6 +141,7 @@ void nx_clocks_apply(void) {
 void nx_clocks_restore(void) {
     if (!g_clk_open) return;
     if (g_cpu_saved_hz) clkrstSetClockRate(&g_cpu_session, g_cpu_saved_hz);
+    if (g_gpu_open) { clkrstCloseSession(&g_gpu_session); g_gpu_open = false; }
     clkrstCloseSession(&g_cpu_session);
     clkrstExit();
     g_clk_open = false;
@@ -152,6 +155,26 @@ void nx_clocks_set_boost(int on) {
     u32 now = 0;
     clkrstGetClockRate(&g_cpu_session, &now);
     printf("[mph-nx] cpu clock set to %u MHz (reads back %u MHz)\n", hz / 1000000u, now / 1000000u);
+}
+
+// native11: the clocks actually running (a sys-clk profile included), for
+// the 10 s stats line. The GPU session is opened on first use.
+unsigned nx_clocks_cpu_mhz(void) {
+    if (!g_clk_open) return 0;
+    u32 now = 0;
+    clkrstGetClockRate(&g_cpu_session, &now);
+    return now / 1000000u;
+}
+unsigned nx_clocks_gpu_mhz(void) {
+    if (!g_clk_open) return 0;
+    if (!g_gpu_tried) {
+        g_gpu_tried = true;
+        g_gpu_open = R_SUCCEEDED(clkrstOpenSession(&g_gpu_session, PcvModuleId_GPU, 3));
+    }
+    if (!g_gpu_open) return 0;
+    u32 now = 0;
+    clkrstGetClockRate(&g_gpu_session, &now);
+    return now / 1000000u;
 }
 
 const char* nx_clocks_status(void) {

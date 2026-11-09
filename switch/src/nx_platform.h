@@ -10,6 +10,8 @@ void nx_clocks_apply(void);
 void nx_clocks_restore(void);
 void nx_clocks_set_boost(int on);
 const char* nx_clocks_status(void);
+unsigned nx_clocks_cpu_mhz(void);
+unsigned nx_clocks_gpu_mhz(void);
 
 // Direct Horizon input read for the frontend (touchscreen plus the buttons the
 // MPH-nx touch cursor uses). Declared again in the frontend patch; keep the

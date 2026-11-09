@@ -2,6 +2,14 @@
 
 Newest first.
 
+## 2026-11-09: switch-native11 (fallback code native, clocks and time breakdown in the log)
+
+- native10 confirmed by Mark: shaking gone, "backwards" 0 at every size, each 30 fps 3D frame up for exactly two refreshes. Gameplay 60 fps overclocked, emulation 5.6 to 9.5 ms a frame. Mark: release target is stock clock at 1x; higher scaler sizes may need an overclock.
+- native10 still ran about 115k ARM9 instructions a second on the fallback interpreter, mostly an overlay 2 routine around 0x02118800. missroots.py over the native8g-native10 logs gave 107 new roots (main binary 2,840 to 2,915 functions).
+- Second CPU on demand was mapped and moved to native12: it already runs in 512-cycle windows and is halted most of the time; its share of the frame is not known from the logs (it does about 2,500 hardware accesses a frame). native11 measures first.
+- Log: real CPU/GPU clocks every 10 s; the emulation time breakdown (emu_profile, 1 round in 31, system counter ticks on the Switch) every 10 s.
+- Cloud boot test: 50,487 commands identical to native8/9/10, identical final screen.
+
 ## 2026-11-09: switch-native10 (shaking: the real cause)
 
 - Mark: shaking still present in native8g and native9 at 2x. The native8g cadence stats showed it directly: in game at 2x, 600 presents per 10 s, each 3D frame on screen for one present, and 300 steps backwards. The presented 3D image alternated between the newest frame and the previous one.
