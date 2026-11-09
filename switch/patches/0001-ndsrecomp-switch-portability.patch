@@ -483,7 +483,7 @@ index 022a1af..8c31a75 100644
  #endif
      if (supported) {
 diff --git a/runner/src/frontend.cpp b/runner/src/frontend.cpp
-index 7d9d4eb..dad3eea 100644
+index 7d9d4eb..72e90e1 100644
 --- a/runner/src/frontend.cpp
 +++ b/runner/src/frontend.cpp
 @@ -4,6 +4,7 @@
@@ -509,7 +509,7 @@ index 7d9d4eb..dad3eea 100644
  #include "gpu3d.h"
  #include "melonds_compute/TextureUpscale.h"
  #include "io.h"
-@@ -215,6 +224,79 @@ void observe_top_black_bands(const uint32_t* pixels, uint64_t frame,
+@@ -215,6 +224,82 @@ void observe_top_black_bands(const uint32_t* pixels, uint64_t frame,
  #include "recomp_runtime_ui.h"
  
  #include "frontend_latency.h"
@@ -552,6 +552,8 @@ index 7d9d4eb..dad3eea 100644
 +extern bool g_nx_card_catchup;   // MPH-nx native8 (io.cpp)
 +extern unsigned long long g_nx_card_catchups;
 +extern bool g_nx_dma_window;     // MPH-nx native8 (scheduler.cpp)
++extern bool g_nx_dma_block;      // MPH-nx native9 (io.cpp)
++extern unsigned long long g_nx_dma_blocks, g_nx_dma_block_units;
 +#if defined(MPHNX_DEKO3D)
 +extern bool g_nx_3d_steady;
 +#else
@@ -570,6 +572,7 @@ index 7d9d4eb..dad3eea 100644
 +    {"nx.dmawin", "Long DMA slices", "A running DMA keeps the long CPU slice instead of 64-cycle rounds for the whole transfer.", &g_nx_dma_window, nullptr},
 +    {"nx.cow", "VRAM copy-on-write", "A 2D VRAM write copies the page for queued lines instead of waiting for them (native8). Off: wait, as native7.", &g_nx_cow, nullptr},
 +    {"nx.hdlines", "Per-line HD layers", "Above 1x, the 2D layers are built line by line with each line's own state. Off: built once at present from the live state (native8e).", &g_nx_hd_lines, nullptr},
++    {"nx.dmablock", "Bulk video DMA", "DMA into palette, VRAM or OAM is written a page at a time with one 2D update, instead of one slow write per halfword. Same timing and data.", &g_nx_dma_block, nullptr},
 +    {"nx.vsync", "Display-locked pacing", "Frames go to the screen one per refresh, and the sound is stretched by under 1% to stay in step. Off: paced by the sound chunks (frames can arrive in pairs).", &g_nx_display_lock, nullptr},
 +    {"nx.3dsteady", "Steady 3D pacing", "Always show the last finished 3D frame (one frame of 3D delay) instead of alternating when the GPU runs late.", &g_nx_3d_steady, nullptr},
 +};
@@ -589,7 +592,7 @@ index 7d9d4eb..dad3eea 100644
  
  namespace {
  
-@@ -815,6 +897,12 @@ bool sdl_init_frontend() {
+@@ -815,6 +900,12 @@ bool sdl_init_frontend() {
      return SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS |
                      SDL_INIT_GAMECONTROLLER);
  #else
@@ -602,7 +605,7 @@ index 7d9d4eb..dad3eea 100644
      return SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS |
                      SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) == 0;
  #endif
-@@ -1006,10 +1094,34 @@ uint32_t drain_audio(const NdsAudioDevice& device, AudioQueue& queue,
+@@ -1006,10 +1097,34 @@ uint32_t drain_audio(const NdsAudioDevice& device, AudioQueue& queue,
                       bool throttle, uint32_t pace_floor, bool& queue_error,
                       const std::vector<int16_t>* owned_pcm = nullptr) {
      if (!device) return 0;
@@ -639,7 +642,7 @@ index 7d9d4eb..dad3eea 100644
              ? static_cast<uint32_t>(std::min<size_t>(1024,(owned_pcm->size()-pcm_offset)/2u))
              : nds_spu_read_output(samples.data(), 1024);
          if (!frames) break;
-@@ -1017,6 +1129,25 @@ uint32_t drain_audio(const NdsAudioDevice& device, AudioQueue& queue,
+@@ -1017,6 +1132,25 @@ uint32_t drain_audio(const NdsAudioDevice& device, AudioQueue& queue,
              std::copy_n(owned_pcm->data()+pcm_offset,frames*2u,samples.data());
              pcm_offset+=frames*2u;
          }
@@ -665,7 +668,7 @@ index 7d9d4eb..dad3eea 100644
          bool pushed = false;
          while (!pushed) {
  #if defined(NDS_HAVE_SDL3)
-@@ -1066,7 +1197,7 @@ uint32_t drain_audio(const NdsAudioDevice& device, AudioQueue& queue,
+@@ -1066,7 +1200,7 @@ uint32_t drain_audio(const NdsAudioDevice& device, AudioQueue& queue,
      // down while the emulator is running behind, so a slow stretch spends the
      // buffered runway instead of having it slept away.
      uint32_t queued = audio_queue_count(device, queue);
@@ -674,7 +677,7 @@ index 7d9d4eb..dad3eea 100644
          // Spend existing audio pacing slack preparing qualified native code.
          // Guest CPUs remain paused; under load/no slack demand execution wins.
          if (!nds_arm9_native_prepare_idle(1000)) SDL_Delay(1);
-@@ -1185,6 +1316,169 @@ constexpr const char* kRuntimeMouseSensitivityKey =
+@@ -1185,6 +1319,169 @@ constexpr const char* kRuntimeMouseSensitivityKey =
  constexpr const char* kRuntimeResumeKey = "system.resume";
  constexpr const char* kRuntimeQuitKey = "system.quit";
  
@@ -832,9 +835,9 @@ index 7d9d4eb..dad3eea 100644
 +    nx_clocks_set_boost(g_nx_cpu_boost);
 +    std::fprintf(stderr, "[mph-nx] ARM7 engine: %s\n",
 +                 g_nx_arm7_native_hook ? "native" : "old (banks and interpreter)");
-+    std::fprintf(stderr, "[mph-nx] speed tests: fastw=%u chain=%u iocont=%u fence3d=%d fencecard=%d steady3d=%d cardcatch=%d dmawin=%d cow=%d hdlines=%d vsync=%d\n",
++    std::fprintf(stderr, "[mph-nx] speed tests: fastw=%u chain=%u iocont=%u fence3d=%d fencecard=%d steady3d=%d cardcatch=%d dmawin=%d cow=%d hdlines=%d vsync=%d dmablock=%d\n",
 +                 g_nx_fast_writes, g_nx_far_chain, g_nx_io_continue, g_nx_fence_3d ? 1 : 0, g_nx_fence_card ? 1 : 0, g_nx_3d_steady ? 1 : 0,
-+                 g_nx_card_catchup ? 1 : 0, g_nx_dma_window ? 1 : 0, g_nx_cow ? 1 : 0, g_nx_hd_lines ? 1 : 0, g_nx_display_lock ? 1 : 0);
++                 g_nx_card_catchup ? 1 : 0, g_nx_dma_window ? 1 : 0, g_nx_cow ? 1 : 0, g_nx_hd_lines ? 1 : 0, g_nx_display_lock ? 1 : 0, g_nx_dma_block ? 1 : 0);
 +    std::fprintf(stderr, "[mph-nx] settings loaded: layout=%s speed=%d fast_loading=%d cpu_sync=%s dispatch_cache=%s\n",
 +                 kNxLayoutNames[g_nx_layout], g_nx_show_speed ? 1 : 0, g_nx_fast_card ? 1 : 0,
 +                 kNxSyncNames[g_nx_sync], kNxCacheNames[g_nx_cache]);
@@ -844,7 +847,7 @@ index 7d9d4eb..dad3eea 100644
  struct RuntimeMenuState {
      NdsFrontendOptions* options = nullptr;
      bool* running = nullptr;
-@@ -1235,6 +1529,30 @@ int runtime_menu_get_value(void* context, const RecompRuntimeUiItem* item,
+@@ -1235,6 +1532,30 @@ int runtime_menu_get_value(void* context, const RecompRuntimeUiItem* item,
                             int* value_out) {
      auto* state = static_cast<RuntimeMenuState*>(context);
      if (!state || !state->options || !item || !value_out) return 0;
@@ -875,7 +878,7 @@ index 7d9d4eb..dad3eea 100644
      if (std::strcmp(item->key, kRuntimeMouseSensitivityKey) == 0) {
          *value_out = state->options->relative_mouse_sensitivity;
          return 1;
-@@ -1246,6 +1564,106 @@ int runtime_menu_set_value(void* context, const RecompRuntimeUiItem* item,
+@@ -1246,6 +1567,106 @@ int runtime_menu_set_value(void* context, const RecompRuntimeUiItem* item,
                             int value) {
      auto* state = static_cast<RuntimeMenuState*>(context);
      if (!state || !state->options || !item) return 0;
@@ -982,7 +985,7 @@ index 7d9d4eb..dad3eea 100644
      if (std::strcmp(item->key, kRuntimeMouseSensitivityKey) == 0) {
          if (value < 10 || value > 400) return 0;
          state->options->relative_mouse_sensitivity =
-@@ -1267,6 +1685,17 @@ int runtime_menu_run_action(void* context, const RecompRuntimeUiItem* item) {
+@@ -1267,6 +1688,17 @@ int runtime_menu_run_action(void* context, const RecompRuntimeUiItem* item) {
          if (state->running) *state->running = false;
          return 1;
      }
@@ -1000,7 +1003,7 @@ index 7d9d4eb..dad3eea 100644
      return 0;
  }
  
-@@ -1323,6 +1752,15 @@ bool runtime_menu_key_input(SDL_Scancode scancode,
+@@ -1323,6 +1755,15 @@ bool runtime_menu_key_input(SDL_Scancode scancode,
  bool runtime_menu_controller_input(SDL_GameControllerButton button,
                                     RecompRuntimeUiInput* input) {
      if (!input) return false;
@@ -1016,7 +1019,7 @@ index 7d9d4eb..dad3eea 100644
      switch (button) {
          case SDL_CONTROLLER_BUTTON_START:
              *input = RECOMP_RUNTIME_UI_INPUT_TOGGLE;
-@@ -1456,6 +1894,49 @@ void destroy_presentation(FrontendPresentation& presentation) {
+@@ -1456,6 +1897,49 @@ void destroy_presentation(FrontendPresentation& presentation) {
      presentation.windows[1] = nullptr;
  }
  
@@ -1066,7 +1069,7 @@ index 7d9d4eb..dad3eea 100644
  SDL_Renderer* create_renderer(SDL_Window* window) {
  #if defined(NDS_HAVE_SDL3)
      // Driver order is NOT left to SDL3's default here. SDL3 orders its Windows
-@@ -1518,6 +1999,16 @@ SDL_Window* create_window(const char* title, int x, int y, int w, int h,
+@@ -1518,6 +2002,16 @@ SDL_Window* create_window(const char* title, int x, int y, int w, int h,
          SDL_SetWindowPosition(window, x, y);
      return window;
  #else
@@ -1083,7 +1086,7 @@ index 7d9d4eb..dad3eea 100644
      return SDL_CreateWindow(title, x, y, w, h, static_cast<uint32_t>(flags));
  #endif
  }
-@@ -1778,6 +2269,18 @@ bool create_presentation(const NdsFrontendOptions& options,
+@@ -1778,6 +2272,18 @@ bool create_presentation(const NdsFrontendOptions& options,
      const int first_height = presentation.separate
          ? kScreenHeight * kWindowScale
          : kScreenHeight * 2 * kWindowScale;
@@ -1102,7 +1105,7 @@ index 7d9d4eb..dad3eea 100644
      const uint64_t top_window_flags =
          SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI |
          (presentation.gl_top
-@@ -1891,15 +2394,23 @@ bool create_presentation(const NdsFrontendOptions& options,
+@@ -1891,15 +2397,23 @@ bool create_presentation(const NdsFrontendOptions& options,
              !presentation.separate && screen == 0
                  ? kScreenHeight * 2 : kScreenHeight;
          if (screen == 0 || presentation.separate) {
@@ -1127,7 +1130,7 @@ index 7d9d4eb..dad3eea 100644
  #endif
          }
          presentation.textures[screen] = SDL_CreateTexture(
-@@ -2077,6 +2588,39 @@ struct OwnedPresentationFrame {
+@@ -2077,6 +2591,39 @@ struct OwnedPresentationFrame {
  };
  #endif
  
@@ -1167,7 +1170,7 @@ index 7d9d4eb..dad3eea 100644
  PresentationTicks present_screens(FrontendPresentation& presentation,
                                    const uint32_t* top_pixels,
                                    int top_width,
-@@ -2141,8 +2685,80 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
+@@ -2141,8 +2688,80 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
  #endif
          return ticks;
      }
@@ -1248,7 +1251,7 @@ index 7d9d4eb..dad3eea 100644
      uint64_t start = SDL_GetPerformanceCounter();
      SDL_UpdateTexture(presentation.textures[0], nullptr, top_pixels,
                        top_width * sizeof(uint32_t));
-@@ -2152,6 +2768,47 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
+@@ -2152,6 +2771,47 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
      if (!presentation.separate) {
          SDL_Renderer* renderer = presentation.renderers[0];
          start = SDL_GetPerformanceCounter();
@@ -1296,7 +1299,7 @@ index 7d9d4eb..dad3eea 100644
          SDL_SetRenderDrawColor(renderer, 20, 20, 20, 255);
          SDL_RenderClear(renderer);
          const SDL_Rect top_rect{
-@@ -2169,6 +2826,9 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
+@@ -2169,6 +2829,9 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
                                  virtual_stylus_x, virtual_stylus_y);
          draw_savestate_notice(renderer, bottom_rect, savestate_notice);
          ticks.draw += SDL_GetPerformanceCounter() - start;
@@ -1306,7 +1309,21 @@ index 7d9d4eb..dad3eea 100644
          start = SDL_GetPerformanceCounter();
          SDL_RenderPresent(renderer);
          ticks.swap += SDL_GetPerformanceCounter() - start;
-@@ -2446,6 +3106,19 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -2403,6 +3066,13 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+     // rate directly; the sub-sample remainder is absorbed by the bounded queue
+     // instead of producing a roughly once-per-second underrun at 32768 Hz.
+     want.freq = kAudioFrequency;
++#if defined(__SWITCH__) && defined(MPHNX_DEKO3D) && !defined(NDS_HAVE_SDL3)
++    // MPH-nx native9: the Switch display is the game's clock (60 Hz, where
++    // the DS ran at 59.83 Hz), so the game makes its sound 0.29% faster.
++    // Play it at the rate it is made; the rate control in drain_audio then
++    // only trims clock drift instead of stretching every block.
++    want.freq = static_cast<int>(kAudioFrequency * 60.0 / 59.8261 + 0.5);
++#endif
+     want.format = AUDIO_S16SYS;
+     want.channels = 2;
+ #if !defined(NDS_HAVE_SDL3)
+@@ -2446,6 +3116,19 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
          options.virtual_stylus.enabled && !mph_prime_controls_available;
      MphPrimeBindingSet mph_prime_bindings{};
      MphPadBindingSet mph_pad_bindings{};
@@ -1326,7 +1343,7 @@ index 7d9d4eb..dad3eea 100644
      if (mph_prime_controls_available) {
          mph_prime_bindings = make_mph_prime_bindings(options.mph_bindings);
          mph_pad_bindings = make_mph_pad_bindings(options.mph_pad_bindings);
-@@ -2543,6 +3216,80 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -2543,6 +3226,80 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
      runtime_menu_config.items = runtime_menu_items;
      runtime_menu_config.item_count =
          sizeof(runtime_menu_items) / sizeof(runtime_menu_items[0]);
@@ -1407,7 +1424,7 @@ index 7d9d4eb..dad3eea 100644
      runtime_menu_config.callbacks.context = &runtime_menu_state;
      runtime_menu_config.callbacks.get_value = runtime_menu_get_value;
      runtime_menu_config.callbacks.set_value = runtime_menu_set_value;
-@@ -2552,6 +3299,10 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -2552,6 +3309,10 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
      runtime_menu_config.theme = "nds";
      runtime_menu_config.accept_label = "A / Enter";
      runtime_menu_config.back_label = "B / Backspace";
@@ -1418,7 +1435,7 @@ index 7d9d4eb..dad3eea 100644
      RecompRuntimeUi* runtime_ui =
          recomp_runtime_ui_create(&runtime_menu_config);
      if (!runtime_ui) {
-@@ -2561,6 +3312,14 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -2561,6 +3322,14 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
      bool mouse_down = false;
      bool touch_release_pending = false;
      uint32_t touch_frames_held = 0;
@@ -1433,7 +1450,7 @@ index 7d9d4eb..dad3eea 100644
      int64_t relative_delta_x = 0;
      int64_t relative_delta_y = 0;
      uint64_t relative_direct_writes = 0;
-@@ -3257,9 +4016,180 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3257,9 +4026,184 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                  relative_mouse_selftest_stage = 10;
              }
          }
@@ -1578,6 +1595,10 @@ index 7d9d4eb..dad3eea 100644
 +                                         g_nx_hd_reject[3] - l_rj[3], g_nx_hd_reject[4] - l_rj[4], rbuf, pbuf);
 +                            l_hd = g_nx_hd_frames;
 +                            for (int i = 0; i < 5; ++i) l_rj[i] = g_nx_hd_reject[i];
++                            static unsigned long long l_db = 0, l_du = 0;
++                            std::fprintf(stderr, "[mph-nx] %s video dma per frame: blocks %.1f units %.0f\n", nx_now(),
++                                         (g_nx_dma_blocks - l_db) / fr, (g_nx_dma_block_units - l_du) / fr);
++                            l_db = g_nx_dma_blocks; l_du = g_nx_dma_block_units;
 +                        }
 +#endif
 +                        l_far = g_nx_far_hits; l_ioc = g_nx_io_cont_count;
@@ -1614,7 +1635,7 @@ index 7d9d4eb..dad3eea 100644
              if (event.type == SDL_QUIT) {
                  release_relative_mouse();
                  running = false;
-@@ -3451,6 +4381,13 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3451,6 +4395,13 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                  clear_virtual_stylus();
                  publish_keys();
              }
@@ -1628,7 +1649,7 @@ index 7d9d4eb..dad3eea 100644
              if (event.type == SDL_CONTROLLERBUTTONDOWN ||
                  event.type == SDL_CONTROLLERBUTTONUP) {
                  RecompRuntimeUiInput menu_input{};
-@@ -3764,10 +4701,20 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3764,10 +4715,20 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                          publish_keys();
                      }
                  };
@@ -1649,7 +1670,7 @@ index 7d9d4eb..dad3eea 100644
              }
  
              if (!menu_open && virtual_stylus_available) {
-@@ -3818,7 +4765,11 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3818,7 +4779,11 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                  }
              }
  
@@ -1662,7 +1683,7 @@ index 7d9d4eb..dad3eea 100644
                  // Right stick -> camera aim; triggers act as bindable
                  // pseudo-buttons (defaults: RT shoot, LT scan-fire).
                  const float rx = SDL_GameControllerGetAxis(
-@@ -3989,6 +4940,85 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3989,6 +4954,85 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                      nds_set_touch(128, 96, true);
              }
          }
@@ -1748,7 +1769,7 @@ index 7d9d4eb..dad3eea 100644
          if (options.custom_gamepad_bindings) {
              // Button events handle digital bindings; poll signed axes here.
              // Each row has one source, so clearing an axis row cannot release
-@@ -4186,8 +5216,9 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -4186,8 +5230,9 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                  presentation, blend_cache.blended[0].data(), top_width,
                  blend_cache.blended[1].data(), bottom_width,
                  runtime_ui,
@@ -1760,7 +1781,7 @@ index 7d9d4eb..dad3eea 100644
                  savestate_notice.empty() ? nullptr : savestate_notice.c_str());
              if (!synthetic_ticks.ok) {
                  compute_failed = true;
-@@ -4210,14 +5241,18 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -4210,14 +5255,18 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
              presentation, top_pixels, top_width,
              bottom_pixels, bottom_width,
              runtime_ui,
@@ -2390,7 +2411,7 @@ index 56dbb80..2640c44 100644
  
      if (info.cpu_brand.empty()) info.cpu_brand = "unknown";
 diff --git a/runner/src/io.cpp b/runner/src/io.cpp
-index 20544a0..9ac871f 100644
+index 20544a0..cf2f3f7 100644
 --- a/runner/src/io.cpp
 +++ b/runner/src/io.cpp
 @@ -1,5 +1,6 @@
@@ -2692,7 +2713,60 @@ index 20544a0..9ac871f 100644
  bool nds_gxfifo_stalled() { return g_gxfifo_stall; }
  
  unsigned long long nds_dma_entry_cycle(int cpu) {
-@@ -3067,11 +3168,11 @@ void nds_dma_run(int cpu, unsigned long long target_cycles) {
+@@ -2973,6 +3074,10 @@ void nds_dma_trigger(int cpu, uint32_t start_mode) {
+     }
+ }
+ 
++#if defined(__SWITCH__) || defined(MPHNX_HOST)
++bool g_nx_dma_block = true;   // MPH-nx native9: DMA into video memory as page blocks
++unsigned long long g_nx_dma_blocks = 0, g_nx_dma_block_units = 0;
++#endif
+ void nds_dma_run(int cpu, unsigned long long target_cycles) {
+     cpu &= 1;
+     // EXACT, not round-sampled. The scheduler only calls this after
+@@ -3040,6 +3145,41 @@ void nds_dma_run(int cpu, unsigned long long target_cycles) {
+                 if (!request_units || nds_gxfifo_stalled()) break;
+                 continue;
+             }
++#endif
++#if defined(__SWITCH__) || defined(MPHNX_HOST)
++            // MPH-nx native9: ARM9 DMA from main RAM or shared WRAM into
++            // palette, VRAM or OAM. Same per-unit DMA timing and the same
++            // values, but the run within one 16 KiB destination page is
++            // written as a block: one 2D-hardware notification instead of a
++            // slow-bus write, a fence check and a bank lookup per halfword.
++            if (g_nx_dma_block && cpu == 0 && !gamecard && !gxfifo && d.dst_inc == 1 &&
++                (d.src_inc == 0 || d.src_inc == 1) &&
++                ((d.cur_src >> 24) == 0x02u || (d.cur_src >> 24) == 0x03u) &&
++                (d.cur_dst >> 24) >= 0x05u && (d.cur_dst >> 24) <= 0x07u &&
++                nds_video_address(d.cur_dst)) {
++                static uint32_t vals[2048];
++                const uint32_t page_left = (0x4000u - (d.cur_dst & 0x3FFFu)) / width;
++                const uint32_t limit = std::min({d.remaining, request_units, page_left, 2048u});
++                const uint32_t dst0 = d.cur_dst & ~(width - 1u);
++                uint32_t n = 0;
++                while (n < limit && g_runtime_cycles < target_cycles) {
++                    const uint32_t unit = dma_unit_cycles(cpu, d, width);
++                    g_runtime_cycles += uint64_t{unit} << 1u;
++                    vals[n++] = width == 4u ? bus_read_u32(d.cur_src & ~3u)
++                                            : bus_read_u16(d.cur_src & ~1u);
++                    d.cur_src = static_cast<uint32_t>(
++                        int64_t{d.cur_src} + int64_t{d.src_inc} * width);
++                    d.cur_dst += width;
++                    --d.remaining;
++                    d.burst_start = false;
++                    --request_units;
++                }
++                nds_video_write_block(dst0, vals, n, width);
++                ++g_nx_dma_blocks;
++                g_nx_dma_block_units += n;
++                if (!request_units) break;
++                continue;
++            }
+ #endif
+             const uint32_t unit = dma_unit_cycles(cpu, d, width);
+             g_runtime_cycles += uint64_t{unit} << (cpu == 0 ? 1u : 0u);
+@@ -3067,11 +3207,11 @@ void nds_dma_run(int cpu, unsigned long long target_cycles) {
                  // The card asserts a distinct DMA request for each 32-bit word.
                  // Suspend this channel without completing or reloading it; the
                  // next data-ready event resumes the pending transaction.
@@ -2706,7 +2780,7 @@ index 20544a0..9ac871f 100644
                  nds_gpu3d_check_fifo_dma();
              }
              continue;
-@@ -3087,7 +3188,7 @@ void nds_dma_run(int cpu, unsigned long long target_cycles) {
+@@ -3087,7 +3227,7 @@ void nds_dma_run(int cpu, unsigned long long target_cycles) {
              // or the native/ndsref counters silently drift apart.
              ++g_counts.dma_done;
          }
@@ -2715,7 +2789,7 @@ index 20544a0..9ac871f 100644
          d.in_progress = false;
          brk_check();
      }
-@@ -3232,6 +3333,7 @@ void nds_tick_timers(int cpu, unsigned long long cpu_cycles) {
+@@ -3232,6 +3372,7 @@ void nds_tick_timers(int cpu, unsigned long long cpu_cycles) {
              unsigned long long extra = ticks / reload_span;
              T.counter = static_cast<uint16_t>(T.reload + (ticks % reload_span));
              carry = 1 + extra;                                 // overflows this round
@@ -2723,7 +2797,7 @@ index 20544a0..9ac871f 100644
              if (T.ctrl & 0x40u) {
                  g_counts.timer_ovf += carry;
                  nds_raise_irq(cpu, 1u << (3 + t));
-@@ -3240,11 +3342,79 @@ void nds_tick_timers(int cpu, unsigned long long cpu_cycles) {
+@@ -3240,11 +3381,79 @@ void nds_tick_timers(int cpu, unsigned long long cpu_cycles) {
      }
  }
  
@@ -2803,7 +2877,7 @@ index 20544a0..9ac871f 100644
      if (cpu == 0 && gpu2d_reg_addr(addr))
          return nds_gpu2d_read(addr, width) & m;
      if (addr >= 0x04000130u && addr < 0x04000134u) {
-@@ -3346,6 +3516,38 @@ uint32_t nds_io_read(uint32_t addr, uint32_t width) {
+@@ -3346,6 +3555,38 @@ uint32_t nds_io_read(uint32_t addr, uint32_t width) {
              return addr == 0x040001A2u ? (auxspi_read_data() & m) : 0u;
          case 0x040001A4: case 0x040001A5:
          case 0x040001A6: case 0x040001A7:
@@ -2842,7 +2916,7 @@ index 20544a0..9ac871f 100644
              return (g_romctrl >> ((addr & 3u) * 8)) & m;
          case 0x04000184: case 0x04000185:  // IPCFIFOCNT
              return (fifocnt_read(cpu) >> ((addr & 1u) * 8)) & m;
-@@ -3366,6 +3568,23 @@ uint32_t nds_io_read(uint32_t addr, uint32_t width) {
+@@ -3366,6 +3607,23 @@ uint32_t nds_io_read(uint32_t addr, uint32_t width) {
                  word = card_response_word(g_card_transfer_pos);
                  g_romctrl &= ~0x00800000u;
                  g_card_transfer_pos += 4u;
@@ -2866,7 +2940,7 @@ index 20544a0..9ac871f 100644
                  if (g_card_transfer_pos < g_card_transfer_len) {
                      const uint32_t xfercycle =
                          (g_romctrl & 0x08000000u) ? 8u : 5u;
-@@ -3399,8 +3618,23 @@ uint32_t nds_io_read(uint32_t addr, uint32_t width) {
+@@ -3399,8 +3657,23 @@ uint32_t nds_io_read(uint32_t addr, uint32_t width) {
  }
  
  void nds_io_write(uint32_t addr, uint32_t value, uint32_t width) {
@@ -2890,7 +2964,7 @@ index 20544a0..9ac871f 100644
      if (card_register_address(addr) && !card_owned_by(cpu)) return;
      if (cpu == 0 && gpu2d_reg_addr(addr)) {
          nds_gpu2d_write(addr, value, width);
-@@ -3483,6 +3717,7 @@ void nds_io_write(uint32_t addr, uint32_t value, uint32_t width) {
+@@ -3483,6 +3756,7 @@ void nds_io_write(uint32_t addr, uint32_t value, uint32_t width) {
              T.ctrl = newctrl;
              if (now_on && !was_on) { T.counter = T.reload; T.accum = 0; }
          }
@@ -3672,7 +3746,7 @@ index 333067f..284921a 100644
  // top width so per-room sub-frusta and entity sphere culling cover the whole
  // band. `adaptive_width` must equal the host 3D render width.
 diff --git a/runner/src/vram.cpp b/runner/src/vram.cpp
-index ed90652..e03c0dc 100644
+index ed90652..67bb014 100644
 --- a/runner/src/vram.cpp
 +++ b/runner/src/vram.cpp
 @@ -5,6 +5,8 @@
@@ -3789,8 +3863,16 @@ index ed90652..e03c0dc 100644
      // A remap rebuilds the flattened renderer views a worker dereferences.
      nds_gpu2d_memory_fence(NDS_GPU2D_FENCE_VRAMCNT);
      apply_map(bank, g_cnt[bank], false);
-@@ -510,6 +578,54 @@ void nds_video_write(int cpu, uint32_t addr, uint32_t value, uint32_t width) {
-     addr &= ~(width - 1u);
+@@ -506,16 +574,70 @@ uint32_t nds_video_read(int cpu, uint32_t addr, uint32_t width) {
+     }
+     return 0;
+ }
+-void nds_video_write(int cpu, uint32_t addr, uint32_t value, uint32_t width) {
+-    addr &= ~(width - 1u);
++// MPH-nx native9: the 2D-hardware side of a video write (fences and
++// copy-on-write for queued lines). It depends only on the page written,
++// so a block of writes to one 16 KiB page needs it once.
++static void video_write_fence(int cpu, uint32_t addr) {
      // Threaded scanline jobs read VRAM/palette/OAM live, so a guest write
      // to those regions must not overtake a line that was latched before it.
 +#if defined(__SWITCH__) || defined(MPHNX_HOST)
@@ -3844,7 +3926,46 @@ index ed90652..e03c0dc 100644
      if (nds_gpu2d_jobs_outstanding.load(std::memory_order_relaxed) != 0u) {
          const uint32_t region = addr & 0xFF000000u;
          nds_gpu2d_drain(region == 0x05000000u ? NDS_GPU2D_FENCE_PALETTE
-@@ -566,6 +682,17 @@ uint32_t nds_vram_read_bg_extpal(int engine, uint32_t addr, uint32_t width) {
+                         : region == 0x07000000u ? NDS_GPU2D_FENCE_OAM
+                                                 : NDS_GPU2D_FENCE_VRAM);
+     }
++}
++void nds_video_write(int cpu, uint32_t addr, uint32_t value, uint32_t width) {
++    addr &= ~(width - 1u);
++    video_write_fence(cpu, addr);
+     if (cpu == 7) {
+         if ((addr & 0xFF000000u) == 0x06000000u)
+             mapped_write(g_arm7[(addr >> 17) & 1u], addr, value, width);
+@@ -535,6 +657,28 @@ void nds_video_write(int cpu, uint32_t addr, uint32_t value, uint32_t width) {
+     }
+ }
+ 
++// MPH-nx native9: an ARM9 block write (DMA) of count units to one 16 KiB
++// page of palette, VRAM or OAM: one hardware notification, then plain stores.
++void nds_video_write_block(uint32_t addr, const uint32_t* values, uint32_t count, uint32_t width) {
++    if (!count) return;
++    addr &= ~(width - 1u);
++    video_write_fence(9, addr);
++    for (uint32_t i = 0; i < count; ++i, addr += width) {
++        const uint32_t value = values[i];
++        if ((addr & 0xFF000000u) == 0x05000000u) {
++            const uint16_t power = nds_powercontrol9();
++            if (power & ((addr & 0x400u) ? 0x0200u : 0x0002u))
++                store(&g_palette[addr & 0x7FFu], value, width);
++        } else if ((addr & 0xFF000000u) == 0x06000000u) {
++            arm9_vram_write(addr, value, width);
++        } else if ((addr & 0xFF000000u) == 0x07000000u) {
++            const uint16_t power = nds_powercontrol9();
++            if (power & ((addr & 0x400u) ? 0x0200u : 0x0002u))
++                store(&g_oam[addr & 0x7FFu], value, width);
++        }
++    }
++}
++
+ bool nds_video_get_region(const char* name, const uint8_t** ptr, uint32_t* len) {
+     if (!name || !ptr || !len) return false;
+     // Debug/savestate readers see applied VRAM, never a staged capture.
+@@ -566,6 +710,17 @@ uint32_t nds_vram_read_bg_extpal(int engine, uint32_t addr, uint32_t width) {
  uint32_t nds_vram_read_obj_extpal(int engine, uint32_t addr, uint32_t width) {
      return mapped_read(engine ? g_bobj_ext : g_aobj_ext, addr, width);
  }
@@ -3863,10 +3984,19 @@ index ed90652..e03c0dc 100644
      engine &= 1;
      const uint16_t bit = engine ? 0x0200u : 0x0002u;
 diff --git a/runner/src/vram.h b/runner/src/vram.h
-index 942493b..ee35f8d 100644
+index 942493b..d2ae143 100644
 --- a/runner/src/vram.h
 +++ b/runner/src/vram.h
-@@ -34,6 +34,11 @@ uint32_t nds_vram_read_obj_extpal(int engine, uint32_t addr, uint32_t width);
+@@ -10,6 +10,8 @@ uint8_t nds_vramstat();
+ bool nds_video_address(uint32_t addr);
+ uint32_t nds_video_read(int cpu, uint32_t addr, uint32_t width);
+ void nds_video_write(int cpu, uint32_t addr, uint32_t value, uint32_t width);
++// MPH-nx native9: ARM9 DMA block write within one 16 KiB page (vram.cpp).
++void nds_video_write_block(uint32_t addr, const uint32_t* values, uint32_t count, uint32_t width);
+ 
+ // Guest-written VRAM may be used as executable storage (notably by ARM7).
+ // These helpers expose physical-backing provenance without teaching the CPU
+@@ -34,6 +36,11 @@ uint32_t nds_vram_read_obj_extpal(int engine, uint32_t addr, uint32_t width);
  // Direct physical palette/OAM views for the software renderer. These remain
  // power-gated and are only valid until the next device reset.
  const uint8_t* nds_vram_renderer_palette(int engine);

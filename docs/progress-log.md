@@ -2,6 +2,16 @@
 
 Newest first.
 
+## 2026-11-08/09: switch-native8b to native8g (scaler fixes, menu speed, judder), switch-native9 (Switch clock, video DMA)
+
+- native8b: the 3x/4x shader sets were never loaded (the load loop stopped at 2x). Fixed; a set that fails to load keeps its size off.
+- native8c (diagnostic): counters and snapshots showed 3x/4x rendered correctly but every other presented frame fell back to the 1x image: MPH submits each 30 fps 3D frame at VBlank, before the frame is presented, which cleared OutputWaited. native8d keeps the slot the 2D engine composited (HiresSlot); every size above 1x now shows sharp. The snapshot fence wait needed a queue flush (native8c froze).
+- native8e: render-size 3D images get four rotating buffers so the presenter never reads one the next 3D frame is drawn into.
+- native8f: title/menu slowdown since native8 was the VRAM copy-on-write check (12% of the emulation thread: every 2D VRAM write scanned 16 snapshots and polled every worker). Now a page-union mask exits most writes at once, and the rest read the workers once. Toggle VRAM copy-on-write. Above 1x, the HD layer surfaces are built per line from each line's latched state on the line workers (they were built at present from live state holding the next frame's VBlank updates). Toggle Per-line HD layers.
+- Shaking (Mark, video): not the scaler (toggles changed nothing). The frame loop was paced by the 1024-sample audio chunks (31 ms); since native8 made frames 6 to 8 ms, frames arrived in pairs, the presenter dropped one and showed the next twice, and the 30 fps 3D stepped 1/3 refreshes instead of 2/2. native8g: display-locked pacing (a frame is handed over only after the presenter took the previous one) with audio rate control, plus cadence stats (presents, drops, how many presents each 3D frame stayed up).
+- Mark: the frame loop is still upstream's DS-clocked emulation loop; the target is a native clock (Switch vsync drives the game's VBlank, sound mixed on demand, the hardware layer advancing only what the game waits on, ARM7 sound driver replaced by a native mixer).
+- native9, first native-clock step: the Switch display is the clock for picture and sound (audio device opened at the rate the game makes sound at 60 Hz, rate control only trims drift). Video DMA (ARM9 DMA from main RAM/shared WRAM into palette, VRAM or OAM) is written a 16 KiB page at a time with one 2D-hardware update instead of a slow-bus write, fence check and bank lookup per halfword (16% of the emulation thread in native8e's profile); per-unit DMA timing and values unchanged. Toggle Bulk video DMA.
+
 ## 2026-11-08: switch-native7 results, switch-native8 (event-driven card and DMA, VRAM copy-on-write, 3x/4x fix)
 
 - native7 on hardware: title and menus draw no 2D line on the main thread. In game one VRAM fence a frame still made the main thread draw 33 to 46 of 192 lines and wait 1.3 to 2.8 ms (roughly 15 to 25% of a 9 to 12 ms frame). Frames with card streaming ran 3,000 to 17,000 scheduler rounds (card fences up to 12,785 a frame) against about 1,000 without.

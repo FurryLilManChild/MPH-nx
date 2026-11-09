@@ -16,6 +16,9 @@ extern bool g_nx_fast_card;
 extern "C" uint32_t bus_read_u32_slow(uint32_t addr);
 const uint32_t* nds_gpu2d_framebuffer(int screen);
 
+extern unsigned long long g_nx_dma_blocks, g_nx_dma_block_units;   // io.cpp (native9)
+extern bool g_nx_dma_block;
+
 namespace {
 void shot_at_exit() {
     const char* f = std::getenv("NR_SHOT");
@@ -47,6 +50,8 @@ void gpu2d_stats_at_exit() {
     nds_gpu2d_cow_stats(&cp, &cf, &cm);
     std::fprintf(stderr, "[gpu2d] cow pages %llu fallbacks %llu page mask %llx\n",
                  (unsigned long long)cp, (unsigned long long)cf, (unsigned long long)cm);
+    std::fprintf(stderr, "[dma] video blocks %llu units %llu (bulk %s)\n", g_nx_dma_blocks, g_nx_dma_block_units,
+                 g_nx_dma_block ? "on" : "off");
 }
 void dump_at_exit() {
     gpu2d_stats_at_exit();
@@ -72,6 +77,7 @@ struct Install {
         const char* off = std::getenv("NR_DISABLE");
         if (!off || off[0] != '1') nr_install();
         if (const char* fc = std::getenv("NR_FASTCARD")) g_nx_fast_card = fc[0] == '1';
+        if (std::getenv("NR_DMA_BLOCK_OFF")) g_nx_dma_block = false;
         std::atexit(dump_at_exit);
     }
 } g_install;
