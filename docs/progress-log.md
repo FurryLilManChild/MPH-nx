@@ -2,6 +2,13 @@
 
 Newest first.
 
+## 2026-11-09: switch-native15 (audio stretch on the audio thread; port menu clean-up)
+
+- native14 (Mark): still crackled in the title-screen slowdowns after button presses and while large rooms load. Log: stretching was on and pinned at its limit (peak 2.48x, 2 s stretched in a 10 s window at 25.8 fps) with up to 68 underruns per 10 s; clean in normal play. Cause: native14 stretched on the emulation thread once per finished frame, so a frame longer than the ~60 ms queue still ran it dry, and the worst title dips needed more than 2.5x.
+- native15: the stretch moves into the SDL audio callback. The ring holds the game's sound as made; each device pull takes from it through the WSOLA stretcher at a ratio set by the ring level at that moment (1x at 1,536 frames or more, up to 4x when empty; rises at once, eases down). When even that runs out the output fades to silence over 3 ms and fades back in over 16 ms, instead of gapping. Log line adds "fades N" (times the sound actually ran out).
+- Port menu clean-up (QoL item 5): the user menu is Display (layout, resolution, show speed), Options (CPU clock, Menu buttons, Audio stretch), Controls, System. Everything else is in a Developer section shown only when /switch/mph-nx/developer.on exists; without it, saved values of those settings are replaced by the tested defaults at every start (GPU 3D renderer is now the default).
+- Title-screen slowdown itself (25.8 fps, heavy fallback and lookup traffic) noted for later; not touched here.
+
 ## 2026-11-09: switch-native14 (audio stretching; logbook list and Launch Ship pop-up)
 
 - native13 (Mark): every menu-button mapping worked as intended. Two new captures: the logbook list (categories, five rows, four scroll buttons) and the Launch Ship confirm. Both added (16 captures, each recognised as itself); detection now runs in list order only, so the logbook list (more specific) wins over the category screen.

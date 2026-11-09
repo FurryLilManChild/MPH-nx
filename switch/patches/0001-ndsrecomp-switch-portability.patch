@@ -499,7 +499,7 @@ index 022a1af..8c31a75 100644
  #endif
      if (supported) {
 diff --git a/runner/src/frontend.cpp b/runner/src/frontend.cpp
-index 7d9d4eb..46b99c7 100644
+index 7d9d4eb..42954dd 100644
 --- a/runner/src/frontend.cpp
 +++ b/runner/src/frontend.cpp
 @@ -4,6 +4,7 @@
@@ -613,7 +613,7 @@ index 7d9d4eb..46b99c7 100644
 +    {"nx.dmawin", "Long DMA slices", "A running DMA keeps the long CPU slice instead of 64-cycle rounds for the whole transfer.", &g_nx_dma_window, nullptr},
 +    {"nx.cow", "VRAM copy-on-write", "A 2D VRAM write copies the page for queued lines instead of waiting for them (native8). Off: wait, as native7.", &g_nx_cow, nullptr},
 +    {"nx.hdlines", "Per-line HD layers", "Above 1x, the 2D layers are built line by line with each line's own state. Off: built once at present from the live state (native8e).", &g_nx_hd_lines, nullptr},
-+    {"nx.stretch", "Audio stretch", "Through slow dips the sound is stretched (same pitch) instead of running dry and crackling.", &g_nx_audio_stretch, nullptr},
++    {"nx.stretch", "Audio stretch", "Through slow moments and loads the sound is stretched (same pitch) and fades softly instead of crackling. Off: plain output.", &g_nx_audio_stretch, nullptr},
 +    {"nx.menunav", "Menu buttons", "Stick/D-pad and A/B work the touch-only menus, pop-ups and scan arrows. Off: touch only.", &g_nx_menunav, nullptr},
 +    {"nx.dmablock", "Bulk video DMA", "DMA into palette, VRAM or OAM is written a page at a time with one 2D update, instead of one slow write per halfword. Same timing and data.", &g_nx_dma_block, nullptr},
 +    {"nx.vsync", "Display-locked pacing", "Frames go to the screen one per refresh, and the sound is stretched by under 1% to stay in step. Off: paced by the sound chunks (frames can arrive in pairs).", &g_nx_display_lock, nullptr},
@@ -637,7 +637,111 @@ index 7d9d4eb..46b99c7 100644
  
  namespace {
  
-@@ -815,6 +918,12 @@ bool sdl_init_frontend() {
+@@ -768,6 +871,93 @@ void SDLCALL audio_stream_underrun_callback(void* userdata,
+ #else
+ using NdsAudioDevice = SDL_AudioDeviceID;
+ 
++#if defined(__SWITCH__)
++// MPH-nx native15: the sound is stretched on the audio thread, as the device
++// asks for it, instead of on the emulation thread once per finished frame.
++// native14 stretched only what each frame handed over, so a frame that took
++// longer than the ~60 ms queue still ran it dry. Here the ring holds the
++// game's sound as made; every device pull takes from it through the WSOLA
++// stretcher at a ratio set by how full the ring is (1x at kNxStretchStart
++// frames or more, up to 4x when empty; rises at once, eases back down). If
++// even that runs out (the middle of a long load), the output fades to silence
++// over a few ms and fades back in when sound returns, instead of gapping.
++// Runs with the device lock held (SDL2 locks around the callback).
++constexpr uint32_t kNxStretchStart = 1536;
++constexpr uint32_t kNxFadeOut = 96, kNxFadeIn = 512;
++mphnx::Stretcher* g_nx_cb_stretcher = nullptr;
++int16_t g_nx_cb_pend[8192 * 2];
++uint32_t g_nx_cb_pend_n = 0;
++double g_nx_cb_ratio = 1.0;
++float g_nx_cb_gain = 1.0f;
++unsigned long long g_nx_audio_fades = 0;
++
++bool nx_audio_fill(AudioQueue* q, int16_t* out, uint32_t requested, int len) {
++    if (!g_nx_audio_stretch || !q->started.load(std::memory_order_relaxed)) {
++        if (g_nx_cb_stretcher) {   // drop the stretcher's leftovers
++            delete g_nx_cb_stretcher;
++            g_nx_cb_stretcher = nullptr;
++            g_nx_cb_pend_n = 0;
++            g_nx_cb_ratio = 1.0;
++            g_nx_cb_gain = 1.0f;
++        }
++        return false;
++    }
++    if (!g_nx_cb_stretcher) g_nx_cb_stretcher = new mphnx::Stretcher();
++    mphnx::Stretcher& st = *g_nx_cb_stretcher;
++    const double level = static_cast<double>(q->count);
++    const double want = level >= kNxStretchStart ? 1.0
++        : 1.0 + 3.0 * (kNxStretchStart - level) / kNxStretchStart;
++    g_nx_cb_ratio = want >= g_nx_cb_ratio ? want : g_nx_cb_ratio + (want - g_nx_cb_ratio) * 0.3;
++    if (g_nx_cb_ratio < 1.002) g_nx_cb_ratio = 1.0;
++    const double ratio = g_nx_cb_ratio;
++    if (ratio > g_nx_stretch_peak) g_nx_stretch_peak = ratio;
++    auto emit = [](const int16_t* p, size_t n) {
++        const size_t room = 8192 - g_nx_cb_pend_n;
++        if (n > room) n = room;
++        std::memcpy(g_nx_cb_pend + g_nx_cb_pend_n * 2u, p, n * kAudioFrameBytes);
++        g_nx_cb_pend_n += static_cast<uint32_t>(n);
++    };
++    for (;;) {
++        st.process(ratio, emit);
++        if (g_nx_cb_pend_n >= requested || q->count == 0) break;
++        const uint32_t take = std::min<uint32_t>(256, q->count);
++        for (uint32_t i = 0; i < take; ++i) {
++            const uint32_t r = (q->read + i) % kAudioCapacityFrames;
++            st.push(q->samples[r * 2], q->samples[r * 2 + 1]);
++        }
++        q->read = (q->read + take) % kAudioCapacityFrames;
++        q->count -= take;
++    }
++    const uint32_t n = std::min(g_nx_cb_pend_n, requested);
++    if (ratio > 1.0) g_nx_stretched_frames += n * (1.0 - 1.0 / ratio);
++    float gain = g_nx_cb_gain;
++    for (uint32_t i = 0; i < n; ++i) {
++        if (gain < 1.0f) gain = std::min(1.0f, gain + 1.0f / kNxFadeIn);
++        out[i * 2] = static_cast<int16_t>(g_nx_cb_pend[i * 2] * gain);
++        out[i * 2 + 1] = static_cast<int16_t>(g_nx_cb_pend[i * 2 + 1] * gain);
++    }
++    if (n < requested) {
++        // Ran out: fade from the last sample down to silence, then silence.
++        const float l = n ? out[(n - 1) * 2] : 0.0f, r = n ? out[(n - 1) * 2 + 1] : 0.0f;
++        const uint32_t fade = std::min(kNxFadeOut, requested - n);
++        for (uint32_t i = 0; i < fade; ++i) {
++            const float k = 1.0f - static_cast<float>(i + 1) / fade;
++            out[(n + i) * 2] = static_cast<int16_t>(l * k);
++            out[(n + i) * 2 + 1] = static_cast<int16_t>(r * k);
++        }
++        if (gain > 0.0f) ++g_nx_audio_fades;
++        gain = 0.0f;
++        q->underruns.fetch_add(1, std::memory_order_relaxed);
++        nds_frontend_latency::shortage(static_cast<int>((requested - n) * kAudioFrameBytes), len);
++    }
++    g_nx_cb_gain = gain;
++    std::memmove(g_nx_cb_pend, g_nx_cb_pend + n * 2u, (g_nx_cb_pend_n - n) * kAudioFrameBytes);
++    g_nx_cb_pend_n -= n;
++    if (q->output_muted) std::memset(out, 0, requested * kAudioFrameBytes);
++    return true;
++}
++#endif
++
+ void SDLCALL audio_callback(void* userdata, Uint8* stream, int len) {
+     // SDL owns this thread, so it cannot be registered at creation; it
+     // registers itself the first time it runs instead. One thread_local test
+@@ -782,6 +972,9 @@ void SDLCALL audio_callback(void* userdata, Uint8* stream, int len) {
+     std::memset(stream, 0, static_cast<size_t>(len));
+     if (!queue || len <= 0) return;
+     const uint32_t requested = static_cast<uint32_t>(len) / kAudioFrameBytes;
++#if defined(__SWITCH__) && !defined(NDS_HAVE_SDL3)
++    if (nx_audio_fill(queue, reinterpret_cast<int16_t*>(stream), requested, len)) return;
++#endif
+     const uint32_t take = std::min(requested, queue->count);
+     auto* output = reinterpret_cast<int16_t*>(stream);
+     const uint32_t first = std::min(take, kAudioCapacityFrames - queue->read);
+@@ -815,6 +1008,12 @@ bool sdl_init_frontend() {
      return SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS |
                      SDL_INIT_GAMECONTROLLER);
  #else
@@ -650,7 +754,7 @@ index 7d9d4eb..46b99c7 100644
      return SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS |
                      SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) == 0;
  #endif
-@@ -1006,10 +1115,54 @@ uint32_t drain_audio(const NdsAudioDevice& device, AudioQueue& queue,
+@@ -1006,10 +1205,34 @@ uint32_t drain_audio(const NdsAudioDevice& device, AudioQueue& queue,
                       bool throttle, uint32_t pace_floor, bool& queue_error,
                       const std::vector<int16_t>* owned_pcm = nullptr) {
      if (!device) return 0;
@@ -680,26 +784,6 @@ index 7d9d4eb..46b99c7 100644
 +        wait_floor = pace_floor * 3u;   // sleep on the sound only far past the target
 +    }
 +#endif
-+#if defined(__SWITCH__) && !defined(NDS_HAVE_SDL3)
-+    // native14: stretch ratio from a short average of the queue level. Full
-+    // speed while the queue holds 3/4 of its target or more; stretched more
-+    // the emptier it gets, up to 2.5x when it is empty. Eased so it glides.
-+    static mphnx::Stretcher s_stretcher;
-+    static std::vector<int16_t> s_stretch_out;
-+    static double s_stretch_ratio = 1.0, s_stretch_q = -1.0;
-+    const bool stretch = g_nx_audio_stretch && throttle && !owned_pcm &&
-+                         queue.started.load(std::memory_order_relaxed);
-+    if (stretch) {
-+        const double q = static_cast<double>(audio_queue_count(device, queue));
-+        if (s_stretch_q < 0.0) s_stretch_q = q;
-+        s_stretch_q += (q - s_stretch_q) * 0.25;
-+        const double t = 0.75 * static_cast<double>(kAudioQueueFrames);
-+        const double want = s_stretch_q >= t ? 1.0 : 1.0 + 1.5 * (t - std::max(0.0, s_stretch_q)) / t;
-+        s_stretch_ratio += (want - s_stretch_ratio) * 0.3;
-+        if (s_stretch_ratio < 1.002) s_stretch_ratio = 1.0;
-+        if (s_stretch_ratio > g_nx_stretch_peak) g_nx_stretch_peak = s_stretch_ratio;
-+    }
-+#endif
      size_t pcm_offset=0;
      for (;;) {
 -        const uint32_t frames = owned_pcm
@@ -707,7 +791,7 @@ index 7d9d4eb..46b99c7 100644
              ? static_cast<uint32_t>(std::min<size_t>(1024,(owned_pcm->size()-pcm_offset)/2u))
              : nds_spu_read_output(samples.data(), 1024);
          if (!frames) break;
-@@ -1017,45 +1170,87 @@ uint32_t drain_audio(const NdsAudioDevice& device, AudioQueue& queue,
+@@ -1017,45 +1240,69 @@ uint32_t drain_audio(const NdsAudioDevice& device, AudioQueue& queue,
              std::copy_n(owned_pcm->data()+pcm_offset,frames*2u,samples.data());
              pcm_offset+=frames*2u;
          }
@@ -719,6 +803,11 @@ index 7d9d4eb..46b99c7 100644
 -                if (SDL_PutAudioStreamData(device.stream, samples.data(),
 -                                           static_cast<int>(
 -                                               frames * kAudioFrameBytes))) {
+-                    pushed = true;
+-                } else {
+-                    queue_error = true;
+-                    return audio_queue_count(device, queue);
+-                }
 +#if defined(__SWITCH__) && defined(MPHNX_DEKO3D) && !defined(NDS_HAVE_SDL3)
 +        if (drc && frames > 1) {
 +            s_drc_acc += frames * drc_ratio;
@@ -733,11 +822,31 @@ index 7d9d4eb..46b99c7 100644
 +                for (int c = 0; c < 2; ++c)
 +                    stretched[i * 2 + c] = static_cast<int16_t>(
 +                        samples[j * 2 + c] + (samples[k * 2 + c] - samples[j * 2 + c]) * t);
-+            }
+             }
+-#else
+-            SDL_LockAudioDevice(device);
+-            if (kAudioCapacityFrames - queue.count >= frames) {
+-                const uint32_t first = std::min(
+-                    frames, kAudioCapacityFrames - queue.write);
+-                std::memcpy(queue.samples.data() + queue.write * 2u,
+-                            samples.data(), first * kAudioFrameBytes);
+-                if (first < frames)
+-                    std::memcpy(queue.samples.data(),
+-                                samples.data() + first * 2u,
+-                                (frames - first) * kAudioFrameBytes);
+-                queue.write = (queue.write + frames) % kAudioCapacityFrames;
+-                queue.count += frames;
+-                pushed = true;
+-            }
+-            SDL_UnlockAudioDevice(device);
 +            std::copy_n(stretched.data(), out * 2u, samples.data());
 +            frames = out;
 +        }
-+#endif
+ #endif
+-            if (!pushed) {
+-                if (!throttle) {
+-                    queue_error = true;
+-                    return audio_queue_count(device, queue);
 +        auto push_block = [&](const int16_t* blk, uint32_t n) -> bool {
 +            bool pushed = false;
 +            while (!pushed) {
@@ -766,10 +875,7 @@ index 7d9d4eb..46b99c7 100644
 +                                    (n - first) * kAudioFrameBytes);
 +                    queue.write = (queue.write + n) % kAudioCapacityFrames;
 +                    queue.count += n;
-                     pushed = true;
--                } else {
--                    queue_error = true;
--                    return audio_queue_count(device, queue);
++                    pushed = true;
 +                }
 +                SDL_UnlockAudioDevice(device);
 +    #endif
@@ -780,55 +886,17 @@ index 7d9d4eb..46b99c7 100644
 +                    }
 +                    SDL_Delay(1);
                  }
-             }
--#else
--            SDL_LockAudioDevice(device);
--            if (kAudioCapacityFrames - queue.count >= frames) {
--                const uint32_t first = std::min(
--                    frames, kAudioCapacityFrames - queue.write);
--                std::memcpy(queue.samples.data() + queue.write * 2u,
--                            samples.data(), first * kAudioFrameBytes);
--                if (first < frames)
--                    std::memcpy(queue.samples.data(),
--                                samples.data() + first * 2u,
--                                (frames - first) * kAudioFrameBytes);
--                queue.write = (queue.write + frames) % kAudioCapacityFrames;
--                queue.count += frames;
--                pushed = true;
--            }
--            SDL_UnlockAudioDevice(device);
--#endif
--            if (!pushed) {
--                if (!throttle) {
--                    queue_error = true;
-+            return true;
-+        };
-+#if defined(__SWITCH__) && !defined(NDS_HAVE_SDL3)
-+        if (stretch) {
-+            for (uint32_t f = 0; f < frames; ++f)
-+                s_stretcher.push(samples[f * 2], samples[f * 2 + 1]);
-+            s_stretch_out.clear();
-+            s_stretcher.process(s_stretch_ratio, [&](const int16_t* p, size_t n) {
-+                s_stretch_out.insert(s_stretch_out.end(), p, p + n * 2);
-+            });
-+            const uint32_t made = static_cast<uint32_t>(s_stretch_out.size() / 2);
-+            if (s_stretch_ratio > 1.0) g_nx_stretched_frames += made * (1.0 - 1.0 / s_stretch_ratio);
-+            for (uint32_t off = 0; off < made; off += 1024) {
-+                const uint32_t n = std::min<uint32_t>(1024, made - off);
-+                if (!push_block(s_stretch_out.data() + off * 2u, n))
-                     return audio_queue_count(device, queue);
--                }
 -                SDL_Delay(1);
              }
-+            continue;
-         }
-+#endif
+-        }
++            return true;
++        };
 +        if (!push_block(samples.data(), frames))
 +            return audio_queue_count(device, queue);
      }
      // Audio is the host's real-time clock. Never drop a produced block: if the
      // emulator is faster than the DS cadence, let SDL consume the backlog
-@@ -1066,7 +1261,7 @@ uint32_t drain_audio(const NdsAudioDevice& device, AudioQueue& queue,
+@@ -1066,7 +1313,7 @@ uint32_t drain_audio(const NdsAudioDevice& device, AudioQueue& queue,
      // down while the emulator is running behind, so a slow stretch spends the
      // buffered runway instead of having it slept away.
      uint32_t queued = audio_queue_count(device, queue);
@@ -837,7 +905,7 @@ index 7d9d4eb..46b99c7 100644
          // Spend existing audio pacing slack preparing qualified native code.
          // Guest CPUs remain paused; under load/no slack demand execution wins.
          if (!nds_arm9_native_prepare_idle(1000)) SDL_Delay(1);
-@@ -1185,6 +1380,169 @@ constexpr const char* kRuntimeMouseSensitivityKey =
+@@ -1185,6 +1432,209 @@ constexpr const char* kRuntimeMouseSensitivityKey =
  constexpr const char* kRuntimeResumeKey = "system.resume";
  constexpr const char* kRuntimeQuitKey = "system.quit";
  
@@ -868,7 +936,15 @@ index 7d9d4eb..46b99c7 100644
 +void nx_apply_cache() { g_nx_dispatch_mask = g_nx_cache ? 4095u : 65535u; }
 +constexpr const char* kNxCoreNames[] = {"Accurate", "Flat (fast)"};
 +constexpr const char* kNxRendererNames[] = {"Software", "GPU (deko3d)"};
++#if defined(MPHNX_DEKO3D)
++int g_nx_renderer = 1;  // applied at the next launch (native15: GPU is the release default)
++#else
 +int g_nx_renderer = 0;  // applied at the next launch
++#endif
++// native15: the tuning and test settings are only in the menu (and only
++// loaded from the settings file) when /switch/mph-nx/developer.on exists.
++// Otherwise they stay at the tested defaults below.
++bool g_nx_developer = false;
 +int g_nx_core = 0;  // applied by nx_main at the next launch
 +// Wall-clock stamp for log lines, so a setting change can be lined up with
 +// the timestamped diagnostics rows.
@@ -955,8 +1031,39 @@ index 7d9d4eb..46b99c7 100644
 +}
 +
 +void nx_load_settings(NdsFrontendOptions& options) {
++    {
++        FILE* dev = std::fopen("/switch/mph-nx/developer.on", "r");
++        g_nx_developer = dev != nullptr;
++        if (dev) std::fclose(dev);
++    }
++    // Tested defaults of the developer-only settings, restored after loading
++    // unless developer.on exists (a test build may have saved other values).
++    const bool d_fast_card = g_nx_fast_card, d_fast_sched = g_nx_fast_sched, d_arm7 = g_nx_arm7_native;
++    const int d_sync = g_nx_sync, d_cache = g_nx_cache, d_core = g_nx_core, d_renderer = g_nx_renderer;
++    bool d_toggle_b[sizeof(kNxToggles) / sizeof(kNxToggles[0])];
++    uint32_t d_toggle_u[sizeof(kNxToggles) / sizeof(kNxToggles[0])];
++    for (size_t i = 0; i < sizeof(kNxToggles) / sizeof(kNxToggles[0]); ++i) {
++        d_toggle_b[i] = kNxToggles[i].b ? *kNxToggles[i].b : false;
++        d_toggle_u[i] = kNxToggles[i].u ? *kNxToggles[i].u : 0u;
++    }
++    auto restore_hidden = [&]() {
++        if (g_nx_developer) return;
++        g_nx_fast_card = d_fast_card; g_nx_fast_sched = d_fast_sched; g_nx_arm7_native = d_arm7;
++        g_nx_sync = d_sync; g_nx_cache = d_cache; g_nx_core = d_core; g_nx_renderer = d_renderer;
++        for (size_t i = 0; i < sizeof(kNxToggles) / sizeof(kNxToggles[0]); ++i) {
++            if (kNxToggles[i].b == &g_nx_audio_stretch || kNxToggles[i].b == &g_nx_menunav) continue;
++            if (kNxToggles[i].b) *kNxToggles[i].b = d_toggle_b[i];
++            else *kNxToggles[i].u = d_toggle_u[i];
++        }
++    };
++    std::fprintf(stderr, "[mph-nx] developer settings: %s\n", g_nx_developer ? "shown (developer.on)" : "hidden, tested defaults");
 +    FILE* f = std::fopen(kNxSettingsPath, "r");
-+    if (!f) return;
++    if (!f) {
++        restore_hidden();
++        nx_apply_sync();
++        nx_apply_cache();
++        return;
++    }
 +    char line[160];
 +    while (std::fgets(line, sizeof line, f)) {
 +        std::string l(line);
@@ -988,6 +1095,7 @@ index 7d9d4eb..46b99c7 100644
 +        }
 +    }
 +    std::fclose(f);
++    restore_hidden();
 +    nx_apply_sync();
 +    nx_apply_cache();
 +    nx_apply_res_scale();
@@ -1007,7 +1115,7 @@ index 7d9d4eb..46b99c7 100644
  struct RuntimeMenuState {
      NdsFrontendOptions* options = nullptr;
      bool* running = nullptr;
-@@ -1235,6 +1593,30 @@ int runtime_menu_get_value(void* context, const RecompRuntimeUiItem* item,
+@@ -1235,6 +1685,30 @@ int runtime_menu_get_value(void* context, const RecompRuntimeUiItem* item,
                             int* value_out) {
      auto* state = static_cast<RuntimeMenuState*>(context);
      if (!state || !state->options || !item || !value_out) return 0;
@@ -1038,7 +1146,7 @@ index 7d9d4eb..46b99c7 100644
      if (std::strcmp(item->key, kRuntimeMouseSensitivityKey) == 0) {
          *value_out = state->options->relative_mouse_sensitivity;
          return 1;
-@@ -1246,6 +1628,106 @@ int runtime_menu_set_value(void* context, const RecompRuntimeUiItem* item,
+@@ -1246,6 +1720,106 @@ int runtime_menu_set_value(void* context, const RecompRuntimeUiItem* item,
                             int value) {
      auto* state = static_cast<RuntimeMenuState*>(context);
      if (!state || !state->options || !item) return 0;
@@ -1145,7 +1253,7 @@ index 7d9d4eb..46b99c7 100644
      if (std::strcmp(item->key, kRuntimeMouseSensitivityKey) == 0) {
          if (value < 10 || value > 400) return 0;
          state->options->relative_mouse_sensitivity =
-@@ -1267,6 +1749,17 @@ int runtime_menu_run_action(void* context, const RecompRuntimeUiItem* item) {
+@@ -1267,6 +1841,17 @@ int runtime_menu_run_action(void* context, const RecompRuntimeUiItem* item) {
          if (state->running) *state->running = false;
          return 1;
      }
@@ -1163,7 +1271,7 @@ index 7d9d4eb..46b99c7 100644
      return 0;
  }
  
-@@ -1323,6 +1816,15 @@ bool runtime_menu_key_input(SDL_Scancode scancode,
+@@ -1323,6 +1908,15 @@ bool runtime_menu_key_input(SDL_Scancode scancode,
  bool runtime_menu_controller_input(SDL_GameControllerButton button,
                                     RecompRuntimeUiInput* input) {
      if (!input) return false;
@@ -1179,7 +1287,7 @@ index 7d9d4eb..46b99c7 100644
      switch (button) {
          case SDL_CONTROLLER_BUTTON_START:
              *input = RECOMP_RUNTIME_UI_INPUT_TOGGLE;
-@@ -1456,6 +1958,49 @@ void destroy_presentation(FrontendPresentation& presentation) {
+@@ -1456,6 +2050,49 @@ void destroy_presentation(FrontendPresentation& presentation) {
      presentation.windows[1] = nullptr;
  }
  
@@ -1229,7 +1337,7 @@ index 7d9d4eb..46b99c7 100644
  SDL_Renderer* create_renderer(SDL_Window* window) {
  #if defined(NDS_HAVE_SDL3)
      // Driver order is NOT left to SDL3's default here. SDL3 orders its Windows
-@@ -1518,6 +2063,16 @@ SDL_Window* create_window(const char* title, int x, int y, int w, int h,
+@@ -1518,6 +2155,16 @@ SDL_Window* create_window(const char* title, int x, int y, int w, int h,
          SDL_SetWindowPosition(window, x, y);
      return window;
  #else
@@ -1246,7 +1354,7 @@ index 7d9d4eb..46b99c7 100644
      return SDL_CreateWindow(title, x, y, w, h, static_cast<uint32_t>(flags));
  #endif
  }
-@@ -1778,6 +2333,18 @@ bool create_presentation(const NdsFrontendOptions& options,
+@@ -1778,6 +2425,18 @@ bool create_presentation(const NdsFrontendOptions& options,
      const int first_height = presentation.separate
          ? kScreenHeight * kWindowScale
          : kScreenHeight * 2 * kWindowScale;
@@ -1265,7 +1373,7 @@ index 7d9d4eb..46b99c7 100644
      const uint64_t top_window_flags =
          SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI |
          (presentation.gl_top
-@@ -1891,15 +2458,23 @@ bool create_presentation(const NdsFrontendOptions& options,
+@@ -1891,15 +2550,23 @@ bool create_presentation(const NdsFrontendOptions& options,
              !presentation.separate && screen == 0
                  ? kScreenHeight * 2 : kScreenHeight;
          if (screen == 0 || presentation.separate) {
@@ -1290,7 +1398,7 @@ index 7d9d4eb..46b99c7 100644
  #endif
          }
          presentation.textures[screen] = SDL_CreateTexture(
-@@ -2077,6 +2652,82 @@ struct OwnedPresentationFrame {
+@@ -2077,6 +2744,82 @@ struct OwnedPresentationFrame {
  };
  #endif
  
@@ -1373,7 +1481,7 @@ index 7d9d4eb..46b99c7 100644
  PresentationTicks present_screens(FrontendPresentation& presentation,
                                    const uint32_t* top_pixels,
                                    int top_width,
-@@ -2141,8 +2792,94 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
+@@ -2141,8 +2884,94 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
  #endif
          return ticks;
      }
@@ -1468,7 +1576,7 @@ index 7d9d4eb..46b99c7 100644
      uint64_t start = SDL_GetPerformanceCounter();
      SDL_UpdateTexture(presentation.textures[0], nullptr, top_pixels,
                        top_width * sizeof(uint32_t));
-@@ -2152,6 +2889,47 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
+@@ -2152,6 +2981,47 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
      if (!presentation.separate) {
          SDL_Renderer* renderer = presentation.renderers[0];
          start = SDL_GetPerformanceCounter();
@@ -1516,7 +1624,7 @@ index 7d9d4eb..46b99c7 100644
          SDL_SetRenderDrawColor(renderer, 20, 20, 20, 255);
          SDL_RenderClear(renderer);
          const SDL_Rect top_rect{
-@@ -2169,6 +2947,9 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
+@@ -2169,6 +3039,9 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
                                  virtual_stylus_x, virtual_stylus_y);
          draw_savestate_notice(renderer, bottom_rect, savestate_notice);
          ticks.draw += SDL_GetPerformanceCounter() - start;
@@ -1526,7 +1634,7 @@ index 7d9d4eb..46b99c7 100644
          start = SDL_GetPerformanceCounter();
          SDL_RenderPresent(renderer);
          ticks.swap += SDL_GetPerformanceCounter() - start;
-@@ -2403,6 +3184,13 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -2403,6 +3276,13 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
      // rate directly; the sub-sample remainder is absorbed by the bounded queue
      // instead of producing a roughly once-per-second underrun at 32768 Hz.
      want.freq = kAudioFrequency;
@@ -1540,7 +1648,7 @@ index 7d9d4eb..46b99c7 100644
      want.format = AUDIO_S16SYS;
      want.channels = 2;
  #if !defined(NDS_HAVE_SDL3)
-@@ -2446,6 +3234,19 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -2446,6 +3326,19 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
          options.virtual_stylus.enabled && !mph_prime_controls_available;
      MphPrimeBindingSet mph_prime_bindings{};
      MphPadBindingSet mph_pad_bindings{};
@@ -1560,7 +1668,7 @@ index 7d9d4eb..46b99c7 100644
      if (mph_prime_controls_available) {
          mph_prime_bindings = make_mph_prime_bindings(options.mph_bindings);
          mph_pad_bindings = make_mph_pad_bindings(options.mph_pad_bindings);
-@@ -2520,7 +3321,11 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -2520,7 +3413,11 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
          nds_set_key_mask(static_cast<uint16_t>(
              0x0FFFu &
              ~(keyboard_pressed | controller_pressed | mouse_pressed |
@@ -1573,7 +1681,7 @@ index 7d9d4eb..46b99c7 100644
      };
      publish_keys();
      nds_set_touch(0, 0, false);
-@@ -2543,6 +3348,80 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -2543,6 +3440,87 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
      runtime_menu_config.items = runtime_menu_items;
      runtime_menu_config.item_count =
          sizeof(runtime_menu_items) / sizeof(runtime_menu_items[0]);
@@ -1591,42 +1699,49 @@ index 7d9d4eb..46b99c7 100644
 +    nx_menu_items.push_back({"nx.speed", "Display", "Show speed",
 +        "Frames per second and game speed in the corner.",
 +        RECOMP_RUNTIME_UI_BOOL, 0, 1, 1, nullptr, 0, nullptr});
-+    nx_menu_items.push_back({"nx.cpuclock", "Speed", "CPU clock",
++    nx_menu_items.push_back({"nx.cpuclock", "Options", "CPU clock",
 +        "Stock: 1020 MHz, the clock retail Switch games run at. Boost: 1785 MHz, the clock retail games use while loading. Applies immediately. A sys-clk profile for this app overrides it.",
 +        RECOMP_RUNTIME_UI_CHOICE, 0, 1, 1, kNxCpuClockNames, 2, nullptr});
-+    nx_menu_items.push_back({"nx.fastload", "Speed", "Fast loading",
++    for (const auto& tg : kNxToggles)
++        if (tg.b == &g_nx_menunav || tg.b == &g_nx_audio_stretch)
++            nx_menu_items.push_back({tg.key, "Options", tg.label, tg.help,
++                RECOMP_RUNTIME_UI_BOOL, 0, 1, 1, nullptr, 0, nullptr});
++    if (g_nx_developer) {
++    nx_menu_items.push_back({"nx.fastload", "Developer", "Fast loading",
 +        "Game card reads complete at once instead of at real card speed. Same data, shorter loads.",
 +        RECOMP_RUNTIME_UI_BOOL, 0, 1, 1, nullptr, 0, nullptr});
-+    nx_menu_items.push_back({"nx.arm7", "Speed", "Native ARM7 (restart)",
++    nx_menu_items.push_back({"nx.arm7", "Developer", "Native ARM7 (restart)",
 +        "On: the second CPU's program runs as native Switch code. Off: the old ARM7 engine, for comparison if something breaks. Takes effect after restarting the game.",
 +        RECOMP_RUNTIME_UI_BOOL, 0, 1, 1, nullptr, 0, nullptr});
-+    nx_menu_items.push_back({"nx.fastsched", "Speed", "Fast scheduler",
++    nx_menu_items.push_back({"nx.fastsched", "Developer", "Fast scheduler",
 +        "Divides finish instantly, sound and clock catch up instead of interrupting, and the sound CPU runs ahead while the main CPU sleeps. Turn off if sound or timing goes wrong. Applies immediately.",
 +        RECOMP_RUNTIME_UI_BOOL, 0, 1, 1, nullptr, 0, nullptr});
 +    for (const auto& tg : kNxToggles) {
 +#if !defined(MPHNX_DEKO3D)
 +        if (tg.b == &g_nx_3d_steady) continue;
 +#endif
++        if (tg.b == &g_nx_menunav || tg.b == &g_nx_audio_stretch) continue;
 +        nx_menu_items.push_back({tg.key, "Speed tests", tg.label, tg.help,
 +            RECOMP_RUNTIME_UI_BOOL, 0, 1, 1, nullptr, 0, nullptr});
 +    }
-+    nx_menu_items.push_back({"nx.sync", "Speed", "CPU sync",
++    nx_menu_items.push_back({"nx.sync", "Developer", "CPU sync",
 +        "How often the two DS processors meet up. Accurate matches the DS; the faster settings let each run longer at a time. Experimental.",
 +        RECOMP_RUNTIME_UI_CHOICE, 0, kNxSyncCount - 1, 1, kNxSyncNames, kNxSyncCount, nullptr});
 +#if defined(MPHNX_DEKO3D)
-+    nx_menu_items.push_back({"nx.renderer", "Speed", "3D renderer (restart)",
++    nx_menu_items.push_back({"nx.renderer", "Developer", "3D renderer (restart)",
 +        "Software draws the DS 3D on the CPU. GPU uses deko3d compute shaders on the Switch GPU (from melonDS for Switch). Quit and relaunch to apply.",
 +        RECOMP_RUNTIME_UI_CHOICE, 0, 1, 1, kNxRendererNames, 2, nullptr});
 +#endif
-+    nx_menu_items.push_back({"nx.link", "Speed", "Block linking",
++    nx_menu_items.push_back({"nx.link", "Developer", "Block linking",
 +        "Flat game code only: blocks jump straight to each other instead of through the full dispatcher. Applies immediately.",
 +        RECOMP_RUNTIME_UI_BOOL, 0, 1, 1, nullptr, 0, nullptr});
-+    nx_menu_items.push_back({"nx.core", "Speed", "Game code (restart)",
++    nx_menu_items.push_back({"nx.core", "Developer", "Game code (restart)",
 +        "Accurate runs the game code exactly as upstream. Flat keeps the DS registers and cycle count in the Switch CPU through each block. Quit and relaunch to apply.",
 +        RECOMP_RUNTIME_UI_CHOICE, 0, 1, 1, kNxCoreNames, 2, nullptr});
-+    nx_menu_items.push_back({"nx.cache", "Speed", "Dispatch cache",
++    nx_menu_items.push_back({"nx.cache", "Developer", "Dispatch cache",
 +        "Size of the lookup table for finding game code. Small fits in the Switch CPU cache. Experimental.",
 +        RECOMP_RUNTIME_UI_CHOICE, 0, 1, 1, kNxCacheNames, 2, nullptr});
++    }   // g_nx_developer
 +    for (const auto& row : kNxBindRows)
 +        nx_menu_items.push_back({row.key, "Controls", row.label, row.desc,
 +            RECOMP_RUNTIME_UI_CHOICE, 0, kNxButtonCount - 1, 1,
@@ -1654,7 +1769,7 @@ index 7d9d4eb..46b99c7 100644
      runtime_menu_config.callbacks.context = &runtime_menu_state;
      runtime_menu_config.callbacks.get_value = runtime_menu_get_value;
      runtime_menu_config.callbacks.set_value = runtime_menu_set_value;
-@@ -2552,6 +3431,10 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -2552,6 +3530,10 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
      runtime_menu_config.theme = "nds";
      runtime_menu_config.accept_label = "A / Enter";
      runtime_menu_config.back_label = "B / Backspace";
@@ -1665,7 +1780,7 @@ index 7d9d4eb..46b99c7 100644
      RecompRuntimeUi* runtime_ui =
          recomp_runtime_ui_create(&runtime_menu_config);
      if (!runtime_ui) {
-@@ -2561,6 +3444,14 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -2561,6 +3543,14 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
      bool mouse_down = false;
      bool touch_release_pending = false;
      uint32_t touch_frames_held = 0;
@@ -1680,7 +1795,7 @@ index 7d9d4eb..46b99c7 100644
      int64_t relative_delta_x = 0;
      int64_t relative_delta_y = 0;
      uint64_t relative_direct_writes = 0;
-@@ -3257,9 +4148,212 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3257,9 +4247,215 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                  relative_mouse_selftest_stage = 10;
              }
          }
@@ -1779,9 +1894,12 @@ index 7d9d4eb..46b99c7 100644
 +                        // native14: how much sound was stretched through dips.
 +                        static uint64_t last_under = 0;
 +                        const uint64_t under = audio_queue.underruns.load(std::memory_order_relaxed);
-+                        std::fprintf(stderr, "[mph-nx] %s audio: stretched %.0f ms (peak %.2fx) underruns %llu stretch=%d\n",
++                        static unsigned long long last_fades = 0;
++                        std::fprintf(stderr, "[mph-nx] %s audio: stretched %.0f ms (peak %.2fx) underruns %llu fades %llu stretch=%d\n",
 +                                     nx_now(), g_nx_stretched_frames * 1000.0 / kAudioFrequency, g_nx_stretch_peak,
-+                                     static_cast<unsigned long long>(under - last_under), g_nx_audio_stretch ? 1 : 0);
++                                     static_cast<unsigned long long>(under - last_under), g_nx_audio_fades - last_fades,
++                                     g_nx_audio_stretch ? 1 : 0);
++                        last_fades = g_nx_audio_fades;
 +                        last_under = under;
 +                        g_nx_stretched_frames = 0.0;
 +                        g_nx_stretch_peak = 1.0;
@@ -1893,7 +2011,7 @@ index 7d9d4eb..46b99c7 100644
              if (event.type == SDL_QUIT) {
                  release_relative_mouse();
                  running = false;
-@@ -3451,6 +4545,31 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3451,6 +4647,31 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                  clear_virtual_stylus();
                  publish_keys();
              }
@@ -1925,7 +2043,7 @@ index 7d9d4eb..46b99c7 100644
              if (event.type == SDL_CONTROLLERBUTTONDOWN ||
                  event.type == SDL_CONTROLLERBUTTONUP) {
                  RecompRuntimeUiInput menu_input{};
-@@ -3707,10 +4826,14 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3707,10 +4928,14 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
          if (controller) {
              // Left stick -> D-pad, with hysteresis so a stick resting near
              // a threshold never flickers a direction.
@@ -1942,7 +2060,7 @@ index 7d9d4eb..46b99c7 100644
              const bool menu_open = runtime_menu_open();
              if (menu_open) {
                  if (stick_pressed != 0) {
-@@ -3764,10 +4887,20 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3764,10 +4989,20 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                          publish_keys();
                      }
                  };
@@ -1963,7 +2081,7 @@ index 7d9d4eb..46b99c7 100644
              }
  
              if (!menu_open && virtual_stylus_available) {
-@@ -3818,7 +4951,11 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3818,7 +5053,11 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                  }
              }
  
@@ -1976,7 +2094,7 @@ index 7d9d4eb..46b99c7 100644
                  // Right stick -> camera aim; triggers act as bindable
                  // pseudo-buttons (defaults: RT shoot, LT scan-fire).
                  const float rx = SDL_GameControllerGetAxis(
-@@ -3989,6 +5126,88 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3989,6 +5228,88 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                      nds_set_touch(128, 96, true);
              }
          }
@@ -2065,7 +2183,7 @@ index 7d9d4eb..46b99c7 100644
          if (options.custom_gamepad_bindings) {
              // Button events handle digital bindings; poll signed axes here.
              // Each row has one source, so clearing an axis row cannot release
-@@ -4186,8 +5405,9 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -4186,8 +5507,9 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                  presentation, blend_cache.blended[0].data(), top_width,
                  blend_cache.blended[1].data(), bottom_width,
                  runtime_ui,
@@ -2077,7 +2195,7 @@ index 7d9d4eb..46b99c7 100644
                  savestate_notice.empty() ? nullptr : savestate_notice.c_str());
              if (!synthetic_ticks.ok) {
                  compute_failed = true;
-@@ -4210,14 +5430,18 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -4210,14 +5532,18 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
              presentation, top_pixels, top_width,
              bottom_pixels, bottom_width,
              runtime_ui,

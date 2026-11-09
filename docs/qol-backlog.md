@@ -4,7 +4,8 @@ Started 2026-11-09 from Mark's list. Not scheduled yet; picked up once the
 in-game speed work is done.
 
 ## 1. Audio stretching through slow dips
-- native14: done (SA-nx's WSOLA stretcher in drain_audio).
+- native14: first version (stretch on the emulation thread); still crackled.
+- native15: stretch moved to the audio thread, up to 4x, soft fades through true stalls.
 - Problem: when a frame runs long, the audio queue runs dry and the sound
   crackles.
 - Now: native9 steers the playback rate by at most 0.6% for clock drift only.
@@ -58,6 +59,7 @@ in-game speed work is done.
   reticle drawn on the target with the HUD work in item 3; target cycling.
 
 ## 5. Port menu clean-up for release
+- native15: done as proposed (developer.on shows the rest).
 - Mark (2026-11-09): the menu still exposes the performance-tuning settings
   and speed-test toggles; an end user does not need them.
 - Proposed user menu: Display (screen layout, resolution, show speed), CPU
