@@ -28,6 +28,7 @@ struct NxPresentFrame
     uint32_t bldcnt, eva, evb, evy, master_bright, priority_3d, order_3d, render_xpos;
     uint64_t hi_addr;           // GPU address of the render-size 3D image
     int hi_w, hi_h;
+    uint32_t serial3d;          // native8g: which 3D frame this frame shows (0 unknown)
 };
 
 struct NxPresentTicks { uint64_t upload, draw, swap; };
@@ -42,3 +43,5 @@ void nx_present_frame(const NxPresentFrame& frame, NxPresentTicks* ticks);
 // native8c diagnostics: frames composed at each render size since the last
 // call, and frames the presenter refused (one line of text).
 void nx_present_stats(char* buf, int n);
+// native8g: hand frames to the presenter at the display's rate (default on).
+extern bool g_nx_display_lock;

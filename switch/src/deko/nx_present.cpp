@@ -7,6 +7,7 @@
 #include <switch.h>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdio>
 #include <cstring>
@@ -14,6 +15,8 @@
 #include <string>
 #include <thread>
 #include <vector>
+
+bool g_nx_display_lock = true;   // native8g: see nx_present_frame
 
 namespace
 {
@@ -50,6 +53,13 @@ dk::Image g_hd_out_img[kSlots][4];
 
 // native8c diagnostics
 std::atomic<unsigned> g_stat_hd[4] = {}, g_stat_refused{0}, g_stat_plain{0};
+// native8g frame cadence: presents, frames dropped unshown, how many presents
+// each 3D frame stayed up (1, 2, 3, 4+), 3D frames shown out of order, and
+// the emulation thread's wait for the display.
+std::atomic<unsigned> g_stat_presents{0}, g_stat_dropped{0}, g_stat_back{0};
+std::atomic<unsigned> g_stat_run[5] = {};
+std::atomic<uint64_t> g_stat_wait_ticks{0};
+std::condition_variable g_taken_cv;   // the presenter took the ready job
 
 struct HdParams {
     uint32_t out_w, out_h, bldcnt, eva, evb, evy, master_bright, prio3d, order3d,
@@ -82,6 +92,7 @@ void thread_main()
             g_job_ready = -1;
             g_job_busy = idx;
         }
+        g_taken_cv.notify_all();
         present_now(g_job[idx].f);
         {
             std::lock_guard<std::mutex> lock(g_job_m);
@@ -273,6 +284,20 @@ namespace {
 void present_now(const NxPresentFrame& f)
 {
     uint64_t t0 = armGetSystemTick();
+    {   // native8g cadence
+        static uint32_t last_serial = 0;
+        static unsigned run = 0;
+        g_stat_presents++;
+        if (f.serial3d) {
+            if (f.serial3d == last_serial) ++run;
+            else {
+                if (last_serial && run) g_stat_run[run < 4 ? run : 4]++;
+                if (last_serial && f.serial3d < last_serial) g_stat_back++;
+                last_serial = f.serial3d;
+                run = 1;
+            }
+        }
+    }
     const int slot = g_queue.acquireImage(g_swapchain);
     if (g_fence_used[slot]) g_fence[slot].wait();
     uint64_t t1 = armGetSystemTick();
@@ -370,7 +395,17 @@ void nx_present_frame(const NxPresentFrame& in, NxPresentTicks* ticks)
     const uint64_t t0 = armGetSystemTick();
     int w;
     {
-        std::lock_guard<std::mutex> lock(g_job_m);
+        std::unique_lock<std::mutex> lock(g_job_m);
+        // native8g: display-locked pacing. Hand over a frame only once the
+        // presenter has taken the previous one, which it does once per
+        // display refresh, so frames reach the screen one per refresh
+        // instead of in bursts set by the audio chunks.
+        if (g_nx_display_lock && g_job_ready >= 0) {
+            const uint64_t w0 = armGetSystemTick();
+            g_taken_cv.wait_for(lock, std::chrono::milliseconds(50), [] { return g_job_ready < 0; });
+            g_stat_wait_ticks += armGetSystemTick() - w0;
+        }
+        if (g_job_ready >= 0) g_stat_dropped++;
         // a slot that is neither being presented nor... the other one
         w = (g_job_busy == 0) ? 1 : (g_job_busy == 1) ? 0 : (g_job_ready == 0 ? 1 : 0);
         if (g_job_ready == w) g_job_ready = -1;   // overwrite an unshown frame
@@ -413,5 +448,10 @@ void nx_present_stats(char* buf, int n)
     for (int v = 0; v < 4 && o < n; ++v)
         o += std::snprintf(buf + o, n - o, " %s %u", kNames[v], g_stat_hd[v].exchange(0));
     if (o < n)
-        std::snprintf(buf + o, n - o, "  refused %u  plain %u", g_stat_refused.exchange(0), g_stat_plain.exchange(0));
+        o += std::snprintf(buf + o, n - o, "  refused %u  plain %u", g_stat_refused.exchange(0), g_stat_plain.exchange(0));
+    if (o < n)
+        std::snprintf(buf + o, n - o, " | cadence: presents %u dropped %u  3D frame held 1:%u 2:%u 3:%u 4+:%u  backwards %u  emu waited %.0f ms",
+                      g_stat_presents.exchange(0), g_stat_dropped.exchange(0),
+                      g_stat_run[1].exchange(0), g_stat_run[2].exchange(0), g_stat_run[3].exchange(0), g_stat_run[4].exchange(0),
+                      g_stat_back.exchange(0), armTicksToNs(g_stat_wait_ticks.exchange(0)) / 1e6);
 }

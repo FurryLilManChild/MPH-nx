@@ -1465,6 +1465,7 @@ void DekoRenderer::RenderFrame(GPU& gpu)
         EmuCmdBuf.barrier(DkBarrier_Primitives, 0);
     }
     SlotScale[curSlice] = CurScale;
+    SlotSerial[curSlice] = ++RenderSerial;
     StatRendered[CurScale]++;
 
     // Flush GPU caches with the fence so the CPU sees the finished image.
@@ -1639,6 +1640,11 @@ void nx_deko_set_scale(int scale)
     if (melonDS::g_nx_deko_renderer) melonDS::g_nx_deko_renderer->RequestedScale = scale;
 }
 // native8c diagnostics (scaler stats line)
+uint32_t nx_deko_serial()
+{
+    melonDS::DekoRenderer* r = melonDS::g_nx_deko_renderer;
+    return r ? r->ShownSerial() : 0;
+}
 void nx_deko_stats(char* buf, int n)
 {
     melonDS::DekoRenderer* r = melonDS::g_nx_deko_renderer;

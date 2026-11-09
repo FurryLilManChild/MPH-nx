@@ -76,6 +76,7 @@ public:
     // native8c diagnostics: frames rendered per size, and why HiresOutput
     // said no (0 no shown slot, 1 not waited, 2 shown slot is 1x).
     unsigned StatRendered[5] = {}, StatHiresNo[3] = {}, StatHiresYes = 0;
+    uint32_t ShownSerial() const { return HiresSlot >= 0 ? SlotSerial[HiresSlot] : 0; }   // native8g
 private:
     s32 Pos[10][2] = {};       // the current polygon's vertices at render size
 
@@ -112,6 +113,7 @@ private:
     // OutputWaited), and how many presented frames ago GetLine last ran.
     int HiresSlot = -1;
     int HiresAge = 1000;
+    uint32_t RenderSerial = 0, SlotSerial[2] = {0, 0};   // native8g: 3D frame numbers
     bool OutputWaited = false;
 public:
     unsigned long long LateFrames = 0;  // frames shown from PrevSlot
