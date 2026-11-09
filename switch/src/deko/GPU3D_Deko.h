@@ -76,7 +76,6 @@ public:
     // native8c diagnostics: frames rendered per size, and why HiresOutput
     // said no (0 no shown slot, 1 not waited, 2 shown slot is 1x).
     unsigned StatRendered[5] = {}, StatHiresNo[3] = {}, StatHiresYes = 0;
-    const void* HiresCpu();
 private:
     s32 Pos[10][2] = {};       // the current polygon's vertices at render size
 
@@ -94,7 +93,14 @@ private:
     // CPU-visible buffer (double buffered), read back through GetLine for
     // the software 2D compositor.
     GpuMemHeap::Allocation FinalOutputMemory[2];
-    GpuMemHeap::Allocation HiresOutputMemory[2];   // render size, for the presenter
+    // native8e: render-size 3D images for the presenter. Four, rotating
+    // independently of the two command/readback slots: the presenter
+    // composes the frame the 2D engine showed on its own thread, and with
+    // two buffers the next 3D frame was drawn into the one it was reading.
+    static const int HiresBuffers = 4;
+    GpuMemHeap::Allocation HiresOutputMemory[HiresBuffers];
+    int SlotHires[2] = {0, 0};   // HiresOutputMemory index each slot rendered into
+    int HiresNext = 0;
     int SlotScale[2] = {0, 0};
     dk::Fence FinalOutputFence[2] = {};
     int OutputSlot = -1;      // slot holding the latest submitted frame

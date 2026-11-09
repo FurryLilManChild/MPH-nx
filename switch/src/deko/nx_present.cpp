@@ -7,7 +7,6 @@
 #include <switch.h>
 #include <array>
 #include <atomic>
-#include <ctime>
 #include <condition_variable>
 #include <cstdio>
 #include <cstring>
@@ -51,34 +50,6 @@ dk::Image g_hd_out_img[kSlots][4];
 
 // native8c diagnostics
 std::atomic<unsigned> g_stat_hd[4] = {}, g_stat_refused{0}, g_stat_plain{0};
-
-void write_bmp(const char* path, int w, int h, const uint32_t* px, bool rgb6)
-{
-    FILE* fp = std::fopen(path, "wb");
-    if (!fp) { std::fprintf(stderr, "[snap] cannot write %s\n", path); return; }
-    const uint32_t row = (uint32_t)w * 3, pad = (4 - row % 4) % 4, data = (row + pad) * (uint32_t)h;
-    uint8_t hdr[54] = {'B', 'M'};
-    auto put32 = [&](int o, uint32_t v) { hdr[o] = v; hdr[o+1] = v >> 8; hdr[o+2] = v >> 16; hdr[o+3] = v >> 24; };
-    put32(2, 54 + data); put32(10, 54); put32(14, 40); put32(18, (uint32_t)w); put32(22, (uint32_t)h);
-    hdr[26] = 1; hdr[28] = 24; put32(34, data);
-    std::fwrite(hdr, 1, 54, fp);
-    std::vector<uint8_t> line(row + pad, 0);
-    for (int y = h - 1; y >= 0; --y) {
-        for (int x = 0; x < w; ++x) {
-            const uint32_t c = px[(size_t)y * w + x];
-            uint8_t r, g, b;
-            if (rgb6) {   // 3D renderer output: r | g << 8 | b << 16, 6 bits each
-                r = (uint8_t)((c & 63) << 2); g = (uint8_t)(((c >> 8) & 63) << 2); b = (uint8_t)(((c >> 16) & 63) << 2);
-            } else {      // 0xAARRGGBB
-                r = (uint8_t)(c >> 16); g = (uint8_t)(c >> 8); b = (uint8_t)c;
-            }
-            line[x * 3] = b; line[x * 3 + 1] = g; line[x * 3 + 2] = r;
-        }
-        std::fwrite(line.data(), 1, line.size(), fp);
-    }
-    std::fclose(fp);
-    std::fprintf(stderr, "[snap] wrote %s (%dx%d)\n", path, w, h);
-}
 
 struct HdParams {
     uint32_t out_w, out_h, bldcnt, eva, evb, evy, master_bright, prio3d, order3d,
@@ -270,7 +241,7 @@ bool nx_present_init()
         for (int i = 0; i < kSlots; ++i) g_hd_in_off[i] = i * in_slot;
         const uint32_t out_slot = align_up(kHiMaxW * kHiMaxH * 4, 0x10000);
         g_hd_out_mem = dk::MemBlockMaker{dev, align_up(out_slot * kSlots, DK_MEMBLOCK_ALIGNMENT)}
-            .setFlags(DkMemBlockFlags_CpuUncached | DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image)   // native8c: CPU-readable for snapshots
+            .setFlags(DkMemBlockFlags_GpuCached | DkMemBlockFlags_Image)
             .create();
         for (int i = 0; i < kSlots; ++i) {
             g_hd_out_off[i] = i * out_slot;
@@ -342,25 +313,6 @@ void present_now(const NxPresentFrame& f)
     if (hd) g_stat_hd[hd_view_idx]++;
     else if (f.hd) g_stat_refused++;
     else g_stat_plain++;
-    char snap_tag[96] = {};
-    if (f.snap) {
-        const std::time_t now = std::time(nullptr);
-        const std::tm* lt = std::localtime(&now);
-        std::snprintf(snap_tag, sizeof snap_tag, "/switch/mph-nx/logs/snap-%02d%02d%02d-set%d",
-                      lt ? lt->tm_hour : 0, lt ? lt->tm_min : 0, lt ? lt->tm_sec : 0, f.snap_scale);
-        char path[160];
-        std::snprintf(path, sizeof path, "%s-native-top-256x192.bmp", snap_tag);
-        write_bmp(path, kDsW, kDsH, f.top, false);
-        std::fprintf(stderr, "[snap] set %d: hd requested %d, accepted %d (size %dx%d, compose %d, layers %d, addr %d)\n",
-                     f.snap_scale, f.hd ? 1 : 0, hd ? 1 : 0, f.hi_w, f.hi_h, g_compose_ok ? 1 : 0,
-                     (f.hd_top && f.hd_below) ? 1 : 0, f.hi_addr ? 1 : 0);
-        if (f.hd && f.hi_cpu && f.hi_w > 0 && f.hi_h > 0) {
-            std::snprintf(path, sizeof path, "%s-renderer-3d-%dx%d.bmp", snap_tag, f.hi_w, f.hi_h);
-            std::vector<uint32_t> copy((size_t)f.hi_w * f.hi_h);
-            std::memcpy(copy.data(), f.hi_cpu, copy.size() * 4);
-            write_bmp(path, f.hi_w, f.hi_h, copy.data(), true);
-        }
-    }
     if (hd) {
         uint8_t* in = static_cast<uint8_t*>(g_hd_in_mem.getCpuAddr()) + g_hd_in_off[slot];
         std::memcpy(in, f.hd_top, kHdLayerBytes);
@@ -389,23 +341,7 @@ void present_now(const NxPresentFrame& f)
         dk::ImageView hd_view{g_hd_out_img[slot][hd_view_idx]};
         g_cmd.blitImage(hd_view, {0, 0, 0, (uint32_t)f.hi_w, (uint32_t)f.hi_h, 1}, fb_view,
                         rect(f.top_rect), DkBlitFlag_FilterLinear);
-        if (f.snap) {
-            // native8c: wait for the compose and save what it produced
-            g_cmd.signalFence(g_fence[slot], true);
-            g_queue.submitCommands(g_cmd.finishList());
-            g_queue.flush();   // native8d: without this the wait never returned (native8c froze)
-            g_fence[slot].wait();
-            g_cmd.clear();
-            g_cmd.addMemory(g_cmd_mem, slot * kCmdSlotSize, kCmdSlotSize);
-            const uint8_t* out_cpu = static_cast<const uint8_t*>(g_hd_out_mem.getCpuAddr()) + g_hd_out_off[slot];
-            std::vector<uint32_t> copy((size_t)f.hi_w * f.hi_h);
-            std::memcpy(copy.data(), out_cpu, copy.size() * 4);
-            char path[160];
-            std::snprintf(path, sizeof path, "%s-composed-top-%dx%d.bmp", snap_tag, f.hi_w, f.hi_h);
-            write_bmp(path, f.hi_w, f.hi_h, copy.data(), false);
-            std::snprintf(path, sizeof path, "top rect %d,%d %dx%d", f.top_rect.x, f.top_rect.y, f.top_rect.w, f.top_rect.h);
-            std::fprintf(stderr, "[snap] composed image blitted to %s\n", path);
-        }
+
     } else {
         g_cmd.blitImage(top_view, {0, 0, 0, kDsW, kDsH, 1}, fb_view, rect(f.top_rect),
                         DkBlitFlag_FilterNearest);

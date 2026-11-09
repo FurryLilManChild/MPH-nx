@@ -151,8 +151,9 @@ bool DekoRenderer::InitRest()
         FinalOutputMemory[i] = NxDeko::ReadbackHeap->Alloc(256*192*4, 256);
         memset(NxDeko::ReadbackHeap->CpuAddr<void>(FinalOutputMemory[i]), 0, 256*192*4);
         armDCacheFlush(NxDeko::ReadbackHeap->CpuAddr<void>(FinalOutputMemory[i]), 256*192*4);
-        HiresOutputMemory[i] = NxDeko::DataHeap->Alloc(1024*768*4, 256);
     }
+    for (int i = 0; i < HiresBuffers; i++)
+        HiresOutputMemory[i] = NxDeko::DataHeap->Alloc(1024*768*4, 256);
 
     return true;
 }
@@ -937,6 +938,9 @@ void DekoRenderer::RenderFrame(GPU& gpu)
     int numSetupIndices = 0;
 
     u32 curSlice = CmdMem.Begin(EmuCmdBuf);
+    const int hiBuf = HiresNext;
+    HiresNext = (HiresNext + 1) % HiresBuffers;
+    SlotHires[curSlice] = hiBuf;
 
     u32 numVariants = 0, prevVariant, prevTexLayer;
     Variant variants[MaxVariants];
@@ -1272,7 +1276,7 @@ void DekoRenderer::RenderFrame(GPU& gpu)
         {NxDeko::DataHeap->GpuAddr(TileMemory), TileMemory.Size},
         {NxDeko::DataHeap->GpuAddr(FinalTileMemory), FinalTileMemory.Size},
         CurScale > 0
-            ? DkBufExtents{NxDeko::DataHeap->GpuAddr(HiresOutputMemory[curSlice]), HiresOutputMemory[curSlice].Size}
+            ? DkBufExtents{NxDeko::DataHeap->GpuAddr(HiresOutputMemory[hiBuf]), HiresOutputMemory[hiBuf].Size}
             : DkBufExtents{NxDeko::ReadbackHeap->GpuAddr(FinalOutputMemory[curSlice]), FinalOutputMemory[curSlice].Size}
     });
 
@@ -1453,7 +1457,7 @@ void DekoRenderer::RenderFrame(GPU& gpu)
         // 256x192 image; take one sample per native pixel from the full one.
         EmuCmdBuf.bindStorageBuffers(DkStage_Compute, 6,
         {
-            {NxDeko::DataHeap->GpuAddr(HiresOutputMemory[curSlice]), HiresOutputMemory[curSlice].Size},
+            {NxDeko::DataHeap->GpuAddr(HiresOutputMemory[hiBuf]), HiresOutputMemory[hiBuf].Size},
             {NxDeko::ReadbackHeap->GpuAddr(FinalOutputMemory[curSlice]), FinalOutputMemory[curSlice].Size}
         });
         EmuCmdBuf.bindShaders(DkStageFlag_Compute, {&S->ShaderDownsample});
@@ -1546,7 +1550,7 @@ bool DekoRenderer::HiresOutput(uint64_t* gpuAddr, int* w, int* h)
     if (SlotScale[HiresSlot] == 0) { StatHiresNo[2]++; return false; }
     StatHiresYes++;
     const int sc = SlotScale[HiresSlot];
-    *gpuAddr = NxDeko::DataHeap->GpuAddr(HiresOutputMemory[HiresSlot]);
+    *gpuAddr = NxDeko::DataHeap->GpuAddr(HiresOutputMemory[SlotHires[HiresSlot]]);
     static const int kW[5] = {256, 384, 512, 768, 1024}, kH[5] = {192, 288, 384, 576, 768};
     *w = kW[sc];
     *h = kH[sc];
@@ -1634,12 +1638,7 @@ void nx_deko_set_scale(int scale)
     melonDS::g_nx_deko_scale_req = scale;
     if (melonDS::g_nx_deko_renderer) melonDS::g_nx_deko_renderer->RequestedScale = scale;
 }
-// native8c diagnostics
-const void* melonDS::DekoRenderer::HiresCpu()
-{
-    if (HiresSlot < 0) return nullptr;
-    return NxDeko::DataHeap->CpuAddr<void>(HiresOutputMemory[HiresSlot]);
-}
+// native8c diagnostics (scaler stats line)
 void nx_deko_stats(char* buf, int n)
 {
     melonDS::DekoRenderer* r = melonDS::g_nx_deko_renderer;
@@ -1652,10 +1651,6 @@ void nx_deko_stats(char* buf, int n)
     for (int i = 0; i < 5; i++) r->StatRendered[i] = 0;
     for (int i = 0; i < 3; i++) r->StatHiresNo[i] = 0;
     r->StatHiresYes = 0;
-}
-const void* nx_deko_hires_cpu()
-{
-    return melonDS::g_nx_deko_renderer ? melonDS::g_nx_deko_renderer->HiresCpu() : nullptr;
 }
 // The render-size 3D image the 2D compositor is showing this frame.
 bool nx_deko_hires(uint64_t* gpuAddr, int* w, int* h)
