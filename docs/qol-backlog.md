@@ -41,3 +41,16 @@ in-game speed work is done.
   screen stays one button away (the - menu or a hold) for anything rare.
 - Would ship as a new screen layout ("Top only + HUD"), so the current layouts
   stay.
+
+## 4. Lock-on targeting (as in the other Prime games)
+- Hold a button (L, as in Prime 1 to 3) to lock onto the nearest visible
+  enemy in front of Samus; the aim then tracks it and strafing circles it.
+- How: the game is native code with its memory in plain Switch memory, so
+  the port can read the enemy list and Samus's position and aim each frame,
+  pick a target, and feed the aim input the game already reads (the same
+  path the right stick uses). No changes to the game's own code are needed.
+- Needs: the layout of MPH's entity and player data. NoneGiven's MphRead (a
+  reimplementation of the game's engine) is the reference to learn it from.
+- Open questions: single player only, or multiplayer too (lock-on against
+  other players changes the balance, so likely off or optional there); a
+  reticle drawn on the target with the HUD work in item 3; target cycling.
