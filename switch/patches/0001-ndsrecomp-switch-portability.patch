@@ -483,7 +483,7 @@ index 022a1af..8c31a75 100644
  #endif
      if (supported) {
 diff --git a/runner/src/frontend.cpp b/runner/src/frontend.cpp
-index 7d9d4eb..3e517d5 100644
+index 7d9d4eb..81e29d0 100644
 --- a/runner/src/frontend.cpp
 +++ b/runner/src/frontend.cpp
 @@ -4,6 +4,7 @@
@@ -508,7 +508,7 @@ index 7d9d4eb..3e517d5 100644
  #include "gpu3d.h"
  #include "melonds_compute/TextureUpscale.h"
  #include "io.h"
-@@ -215,6 +223,76 @@ void observe_top_black_bands(const uint32_t* pixels, uint64_t frame,
+@@ -215,6 +223,78 @@ void observe_top_black_bands(const uint32_t* pixels, uint64_t frame,
  #include "recomp_runtime_ui.h"
  
  #include "frontend_latency.h"
@@ -567,6 +567,8 @@ index 7d9d4eb..3e517d5 100644
 +    {"nx.async2d", "Async 2D", "2D lines are drawn by worker threads from palette/OAM snapshots, and the emulation no longer waits for them at VBlank. Off: the old fenced behaviour.", &g_nx_2d_async, nullptr},
 +    {"nx.cardcatch", "Event-driven card", "Card polls catch the card up to the game's own clock instead of ending the CPU slice (same timing, fewer scheduler rounds).", &g_nx_card_catchup, nullptr},
 +    {"nx.dmawin", "Long DMA slices", "A running DMA keeps the long CPU slice instead of 64-cycle rounds for the whole transfer.", &g_nx_dma_window, nullptr},
++    {"nx.cow", "VRAM copy-on-write", "A 2D VRAM write copies the page for queued lines instead of waiting for them (native8). Off: wait, as native7.", &g_nx_cow, nullptr},
++    {"nx.hdlines", "Per-line HD layers", "Above 1x, the 2D layers are built line by line with each line's own state. Off: built once at present from the live state (native8e).", &g_nx_hd_lines, nullptr},
 +    {"nx.3dsteady", "Steady 3D pacing", "Always show the last finished 3D frame (one frame of 3D delay) instead of alternating when the GPU runs late.", &g_nx_3d_steady, nullptr},
 +};
 +extern unsigned long long g_nx_divs, g_nx_rounds, g_nx_arm7_lead_rounds;
@@ -585,7 +587,7 @@ index 7d9d4eb..3e517d5 100644
  
  namespace {
  
-@@ -815,6 +893,12 @@ bool sdl_init_frontend() {
+@@ -815,6 +895,12 @@ bool sdl_init_frontend() {
      return SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS |
                      SDL_INIT_GAMECONTROLLER);
  #else
@@ -598,7 +600,7 @@ index 7d9d4eb..3e517d5 100644
      return SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_EVENTS |
                      SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER) == 0;
  #endif
-@@ -1185,6 +1269,169 @@ constexpr const char* kRuntimeMouseSensitivityKey =
+@@ -1185,6 +1271,169 @@ constexpr const char* kRuntimeMouseSensitivityKey =
  constexpr const char* kRuntimeResumeKey = "system.resume";
  constexpr const char* kRuntimeQuitKey = "system.quit";
  
@@ -756,9 +758,9 @@ index 7d9d4eb..3e517d5 100644
 +    nx_clocks_set_boost(g_nx_cpu_boost);
 +    std::fprintf(stderr, "[mph-nx] ARM7 engine: %s\n",
 +                 g_nx_arm7_native_hook ? "native" : "old (banks and interpreter)");
-+    std::fprintf(stderr, "[mph-nx] speed tests: fastw=%u chain=%u iocont=%u fence3d=%d fencecard=%d steady3d=%d cardcatch=%d dmawin=%d\n",
++    std::fprintf(stderr, "[mph-nx] speed tests: fastw=%u chain=%u iocont=%u fence3d=%d fencecard=%d steady3d=%d cardcatch=%d dmawin=%d cow=%d hdlines=%d\n",
 +                 g_nx_fast_writes, g_nx_far_chain, g_nx_io_continue, g_nx_fence_3d ? 1 : 0, g_nx_fence_card ? 1 : 0, g_nx_3d_steady ? 1 : 0,
-+                 g_nx_card_catchup ? 1 : 0, g_nx_dma_window ? 1 : 0);
++                 g_nx_card_catchup ? 1 : 0, g_nx_dma_window ? 1 : 0, g_nx_cow ? 1 : 0, g_nx_hd_lines ? 1 : 0);
 +    std::fprintf(stderr, "[mph-nx] settings loaded: layout=%s speed=%d fast_loading=%d cpu_sync=%s dispatch_cache=%s\n",
 +                 kNxLayoutNames[g_nx_layout], g_nx_show_speed ? 1 : 0, g_nx_fast_card ? 1 : 0,
 +                 kNxSyncNames[g_nx_sync], kNxCacheNames[g_nx_cache]);
@@ -768,7 +770,7 @@ index 7d9d4eb..3e517d5 100644
  struct RuntimeMenuState {
      NdsFrontendOptions* options = nullptr;
      bool* running = nullptr;
-@@ -1235,6 +1482,30 @@ int runtime_menu_get_value(void* context, const RecompRuntimeUiItem* item,
+@@ -1235,6 +1484,30 @@ int runtime_menu_get_value(void* context, const RecompRuntimeUiItem* item,
                             int* value_out) {
      auto* state = static_cast<RuntimeMenuState*>(context);
      if (!state || !state->options || !item || !value_out) return 0;
@@ -799,7 +801,7 @@ index 7d9d4eb..3e517d5 100644
      if (std::strcmp(item->key, kRuntimeMouseSensitivityKey) == 0) {
          *value_out = state->options->relative_mouse_sensitivity;
          return 1;
-@@ -1246,6 +1517,106 @@ int runtime_menu_set_value(void* context, const RecompRuntimeUiItem* item,
+@@ -1246,6 +1519,106 @@ int runtime_menu_set_value(void* context, const RecompRuntimeUiItem* item,
                             int value) {
      auto* state = static_cast<RuntimeMenuState*>(context);
      if (!state || !state->options || !item) return 0;
@@ -906,7 +908,7 @@ index 7d9d4eb..3e517d5 100644
      if (std::strcmp(item->key, kRuntimeMouseSensitivityKey) == 0) {
          if (value < 10 || value > 400) return 0;
          state->options->relative_mouse_sensitivity =
-@@ -1267,6 +1638,17 @@ int runtime_menu_run_action(void* context, const RecompRuntimeUiItem* item) {
+@@ -1267,6 +1640,17 @@ int runtime_menu_run_action(void* context, const RecompRuntimeUiItem* item) {
          if (state->running) *state->running = false;
          return 1;
      }
@@ -924,7 +926,7 @@ index 7d9d4eb..3e517d5 100644
      return 0;
  }
  
-@@ -1323,6 +1705,15 @@ bool runtime_menu_key_input(SDL_Scancode scancode,
+@@ -1323,6 +1707,15 @@ bool runtime_menu_key_input(SDL_Scancode scancode,
  bool runtime_menu_controller_input(SDL_GameControllerButton button,
                                     RecompRuntimeUiInput* input) {
      if (!input) return false;
@@ -940,7 +942,7 @@ index 7d9d4eb..3e517d5 100644
      switch (button) {
          case SDL_CONTROLLER_BUTTON_START:
              *input = RECOMP_RUNTIME_UI_INPUT_TOGGLE;
-@@ -1456,6 +1847,49 @@ void destroy_presentation(FrontendPresentation& presentation) {
+@@ -1456,6 +1849,49 @@ void destroy_presentation(FrontendPresentation& presentation) {
      presentation.windows[1] = nullptr;
  }
  
@@ -990,7 +992,7 @@ index 7d9d4eb..3e517d5 100644
  SDL_Renderer* create_renderer(SDL_Window* window) {
  #if defined(NDS_HAVE_SDL3)
      // Driver order is NOT left to SDL3's default here. SDL3 orders its Windows
-@@ -1518,6 +1952,16 @@ SDL_Window* create_window(const char* title, int x, int y, int w, int h,
+@@ -1518,6 +1954,16 @@ SDL_Window* create_window(const char* title, int x, int y, int w, int h,
          SDL_SetWindowPosition(window, x, y);
      return window;
  #else
@@ -1007,7 +1009,7 @@ index 7d9d4eb..3e517d5 100644
      return SDL_CreateWindow(title, x, y, w, h, static_cast<uint32_t>(flags));
  #endif
  }
-@@ -1778,6 +2222,18 @@ bool create_presentation(const NdsFrontendOptions& options,
+@@ -1778,6 +2224,18 @@ bool create_presentation(const NdsFrontendOptions& options,
      const int first_height = presentation.separate
          ? kScreenHeight * kWindowScale
          : kScreenHeight * 2 * kWindowScale;
@@ -1026,7 +1028,7 @@ index 7d9d4eb..3e517d5 100644
      const uint64_t top_window_flags =
          SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI |
          (presentation.gl_top
-@@ -1891,15 +2347,23 @@ bool create_presentation(const NdsFrontendOptions& options,
+@@ -1891,15 +2349,23 @@ bool create_presentation(const NdsFrontendOptions& options,
              !presentation.separate && screen == 0
                  ? kScreenHeight * 2 : kScreenHeight;
          if (screen == 0 || presentation.separate) {
@@ -1051,7 +1053,7 @@ index 7d9d4eb..3e517d5 100644
  #endif
          }
          presentation.textures[screen] = SDL_CreateTexture(
-@@ -2077,6 +2541,39 @@ struct OwnedPresentationFrame {
+@@ -2077,6 +2543,39 @@ struct OwnedPresentationFrame {
  };
  #endif
  
@@ -1091,7 +1093,7 @@ index 7d9d4eb..3e517d5 100644
  PresentationTicks present_screens(FrontendPresentation& presentation,
                                    const uint32_t* top_pixels,
                                    int top_width,
-@@ -2141,8 +2638,79 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
+@@ -2141,8 +2640,79 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
  #endif
          return ticks;
      }
@@ -1171,7 +1173,7 @@ index 7d9d4eb..3e517d5 100644
      uint64_t start = SDL_GetPerformanceCounter();
      SDL_UpdateTexture(presentation.textures[0], nullptr, top_pixels,
                        top_width * sizeof(uint32_t));
-@@ -2152,6 +2720,47 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
+@@ -2152,6 +2722,47 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
      if (!presentation.separate) {
          SDL_Renderer* renderer = presentation.renderers[0];
          start = SDL_GetPerformanceCounter();
@@ -1219,7 +1221,7 @@ index 7d9d4eb..3e517d5 100644
          SDL_SetRenderDrawColor(renderer, 20, 20, 20, 255);
          SDL_RenderClear(renderer);
          const SDL_Rect top_rect{
-@@ -2169,6 +2778,9 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
+@@ -2169,6 +2780,9 @@ PresentationTicks present_screens(FrontendPresentation& presentation,
                                  virtual_stylus_x, virtual_stylus_y);
          draw_savestate_notice(renderer, bottom_rect, savestate_notice);
          ticks.draw += SDL_GetPerformanceCounter() - start;
@@ -1229,7 +1231,7 @@ index 7d9d4eb..3e517d5 100644
          start = SDL_GetPerformanceCounter();
          SDL_RenderPresent(renderer);
          ticks.swap += SDL_GetPerformanceCounter() - start;
-@@ -2446,6 +3058,19 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -2446,6 +3060,19 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
          options.virtual_stylus.enabled && !mph_prime_controls_available;
      MphPrimeBindingSet mph_prime_bindings{};
      MphPadBindingSet mph_pad_bindings{};
@@ -1249,7 +1251,7 @@ index 7d9d4eb..3e517d5 100644
      if (mph_prime_controls_available) {
          mph_prime_bindings = make_mph_prime_bindings(options.mph_bindings);
          mph_pad_bindings = make_mph_pad_bindings(options.mph_pad_bindings);
-@@ -2543,6 +3168,80 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -2543,6 +3170,80 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
      runtime_menu_config.items = runtime_menu_items;
      runtime_menu_config.item_count =
          sizeof(runtime_menu_items) / sizeof(runtime_menu_items[0]);
@@ -1330,7 +1332,7 @@ index 7d9d4eb..3e517d5 100644
      runtime_menu_config.callbacks.context = &runtime_menu_state;
      runtime_menu_config.callbacks.get_value = runtime_menu_get_value;
      runtime_menu_config.callbacks.set_value = runtime_menu_set_value;
-@@ -2552,6 +3251,10 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -2552,6 +3253,10 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
      runtime_menu_config.theme = "nds";
      runtime_menu_config.accept_label = "A / Enter";
      runtime_menu_config.back_label = "B / Backspace";
@@ -1341,7 +1343,7 @@ index 7d9d4eb..3e517d5 100644
      RecompRuntimeUi* runtime_ui =
          recomp_runtime_ui_create(&runtime_menu_config);
      if (!runtime_ui) {
-@@ -2561,6 +3264,14 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -2561,6 +3266,14 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
      bool mouse_down = false;
      bool touch_release_pending = false;
      uint32_t touch_frames_held = 0;
@@ -1356,7 +1358,7 @@ index 7d9d4eb..3e517d5 100644
      int64_t relative_delta_x = 0;
      int64_t relative_delta_y = 0;
      uint64_t relative_direct_writes = 0;
-@@ -3257,9 +3968,180 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3257,9 +3970,180 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                  relative_mouse_selftest_stage = 10;
              }
          }
@@ -1537,7 +1539,7 @@ index 7d9d4eb..3e517d5 100644
              if (event.type == SDL_QUIT) {
                  release_relative_mouse();
                  running = false;
-@@ -3451,6 +4333,13 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3451,6 +4335,13 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                  clear_virtual_stylus();
                  publish_keys();
              }
@@ -1551,7 +1553,7 @@ index 7d9d4eb..3e517d5 100644
              if (event.type == SDL_CONTROLLERBUTTONDOWN ||
                  event.type == SDL_CONTROLLERBUTTONUP) {
                  RecompRuntimeUiInput menu_input{};
-@@ -3764,10 +4653,20 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3764,10 +4655,20 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                          publish_keys();
                      }
                  };
@@ -1572,7 +1574,7 @@ index 7d9d4eb..3e517d5 100644
              }
  
              if (!menu_open && virtual_stylus_available) {
-@@ -3818,7 +4717,11 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3818,7 +4719,11 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                  }
              }
  
@@ -1585,7 +1587,7 @@ index 7d9d4eb..3e517d5 100644
                  // Right stick -> camera aim; triggers act as bindable
                  // pseudo-buttons (defaults: RT shoot, LT scan-fire).
                  const float rx = SDL_GameControllerGetAxis(
-@@ -3989,6 +4892,85 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -3989,6 +4894,85 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                      nds_set_touch(128, 96, true);
              }
          }
@@ -1671,7 +1673,7 @@ index 7d9d4eb..3e517d5 100644
          if (options.custom_gamepad_bindings) {
              // Button events handle digital bindings; poll signed axes here.
              // Each row has one source, so clearing an axis row cannot release
-@@ -4186,8 +5168,9 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -4186,8 +5170,9 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
                  presentation, blend_cache.blended[0].data(), top_width,
                  blend_cache.blended[1].data(), bottom_width,
                  runtime_ui,
@@ -1683,7 +1685,7 @@ index 7d9d4eb..3e517d5 100644
                  savestate_notice.empty() ? nullptr : savestate_notice.c_str());
              if (!synthetic_ticks.ok) {
                  compute_failed = true;
-@@ -4210,14 +5193,18 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
+@@ -4210,14 +5195,18 @@ int nds_run_interactive_frontend(const NdsFrontendOptions& initial_options) {
              presentation, top_pixels, top_width,
              bottom_pixels, bottom_width,
              runtime_ui,
@@ -1705,10 +1707,36 @@ index 7d9d4eb..3e517d5 100644
          if (cpu_handoff) {
              if (producer_pending) {
 diff --git a/runner/src/gpu2d.cpp b/runner/src/gpu2d.cpp
-index c03b216..3cb4b13 100644
+index c03b216..ade1eff 100644
 --- a/runner/src/gpu2d.cpp
 +++ b/runner/src/gpu2d.cpp
-@@ -1642,6 +1642,19 @@ uint64_t ns_since(std::chrono::steady_clock::time_point a,
+@@ -153,6 +153,17 @@ bool g_hd_frame_valid = false;
+ std::vector<uint32_t> g_hd_top_pixels;
+ std::vector<uint32_t> g_hd_below_pixels;
+ NdsGpu2dHdFrame g_hd_frame{};
++#if defined(__SWITCH__) || defined(MPHNX_HOST)
++// MPH-nx native8f: the HD layer surfaces are built line by line on the line
++// workers from the state each line was latched with (the same state the
++// native line is drawn from), per framebuffer, instead of once at present
++// from the live registers/OAM/VRAM, which by then hold the next frame's
++// VBlank updates. g_hdl_ok[b]: every line of buffer b was HD-eligible.
++struct HdlParams { uint8_t prio3d = 0; uint16_t bldcnt = 0, master_bright = 0; uint8_t eva = 0, evb = 0, evy = 0; };
++std::vector<uint32_t> g_hdl_top[2], g_hdl_below[2];
++bool g_hdl_ok[2] = {};
++HdlParams g_hdl_params[2];
++#endif
+ 
+ uint32_t hd_meta(const Pixel& p, uint8_t window_mask) {
+     return static_cast<uint32_t>(p.target & 0x3Fu) |
+@@ -1079,6 +1090,7 @@ struct LineJob {
+     std::array<uint32_t, 256> line3d_storage{};
+     const uint32_t* line3d = nullptr;
+     uint32_t buffer = 0;
++    bool hd_line = false;   // MPH-nx native8f: also emit this line's HD layers
+     uint32_t screen[2]{};
+     int y = 0;
+     bool engine_active[2]{};
+@@ -1642,6 +1654,20 @@ uint64_t ns_since(std::chrono::steady_clock::time_point a,
  // write could change is captured here, and the two pieces of renderer-owned
  // mutable state -- the BG2/BG3 affine accumulators and the DISPCAPCNT enable
  // latch -- are advanced here and nowhere else.
@@ -1718,6 +1746,7 @@ index c03b216..3cb4b13 100644
 +constexpr int kPoSnaps = 16;
 +PoSnap g_po_snap[kPoSnaps];
 +int g_po_cur = -1;
++uint64_t g_po_page_union = 0;   // MPH-nx native8f: pages any live snapshot may still read
 +uint64_t g_po_gen_taken = ~0ull;
 +uint64_t g_po_snapshots = 0;
 +uint64_t g_po_snap_waits = 0;
@@ -1728,7 +1757,7 @@ index c03b216..3cb4b13 100644
  void latch_line(int y, LineJob& job) {
      const bool engine_a_on_top = (nds_powercontrol9() & 0x8000u) != 0;
      job.y = y;
-@@ -1654,7 +1667,18 @@ void latch_line(int y, LineJob& job) {
+@@ -1654,7 +1680,18 @@ void latch_line(int y, LineJob& job) {
          job.screen[e] = static_cast<uint32_t>(engine_a_on_top ? e : (e ^ 1));
          job.palette[e] = nds_vram_renderer_palette(e);
          job.oam[e] = nds_vram_renderer_oam(e);
@@ -1747,7 +1776,66 @@ index c03b216..3cb4b13 100644
      }
      job.engine_active[0] = !g_direct_frame_active;
      job.engine_active[1] = true;
-@@ -1865,6 +1889,11 @@ struct Pool {
+@@ -1692,6 +1729,44 @@ void latch_line(int y, LineJob& job) {
+     if (job.direct_pixels && job.cap) job.engine_active[0] = true;
+     job.bg0_3d = (job.unit[0].dispcnt & 0x8u) != 0 &&
+                  (job.unit[0].dispcnt & 0x100u) != 0;
++#if defined(__SWITCH__) || defined(MPHNX_HOST)
++    // MPH-nx native8f: per-line HD layers. The checks mirror the present-time
++    // pass in nds_gpu2d_adaptive_framebuffer, evaluated with this line's
++    // latched state; one ineligible line keeps the whole frame at 1x.
++    job.hd_line = false;
++    if (g_nx_hd_lines && g_hd_emit_enabled && !g_adaptive_skybox_fill) {
++        const uint32_t b = job.buffer & 1u;
++        if (y == 0) {
++            g_hdl_ok[b] = true;
++            if (g_hdl_top[b].size() != 256u * 192u * 2u) {
++                g_hdl_top[b].assign(256u * 192u * 2u, 0u);
++                g_hdl_below[b].assign(256u * 192u * 2u, 0u);
++            }
++        }
++        const Unit& hu = job.unit[0];
++        bool ok = job.screen[0] == 0 && job.engine_active[0] &&
++                  job.palette[0] && job.oam[0] && job.vram[0] &&
++                  !(hu.dispcnt & 0x80u) && ((hu.dispcnt >> 16) & 3u) == 1u &&
++                  job.bg0_3d && !hu.capture_latch &&
++                  nds_gpu3d_render_xpos() == 0u && !g_adaptive_center_native &&
++                  !nds_title_patches_mph_adaptive_centered_native() &&
++                  g_hdl_top[b].size() == 256u * 192u * 2u;
++        for (int bg = 1; ok && bg < 4; ++bg)
++            if ((hu.dispcnt & (0x100u << bg)) && bg_kind(hu, bg) != BgKind::Text) ok = false;
++        if (!ok) {
++            g_hdl_ok[b] = false;
++        } else {
++            HdlParams& hp = g_hdl_params[b];
++            hp.prio3d = static_cast<uint8_t>(hu.bgcnt[0] & 3u);
++            hp.bldcnt = static_cast<uint16_t>(hu.bldcnt);
++            hp.master_bright = static_cast<uint16_t>(hu.master_bright);
++            hp.eva = static_cast<uint8_t>(hu.eva);
++            hp.evb = static_cast<uint8_t>(hu.evb);
++            hp.evy = static_cast<uint8_t>(hu.evy);
++            job.hd_line = true;
++        }
++    }
++#endif
+ 
+     // The 3D line and the wide-3D snapshot are pulled here, in scanline order,
+     // under exactly the condition the inline render used: GPU3D::GetLine writes
+@@ -1786,7 +1861,13 @@ void render_direct_window_line(const LineJob& job) {
+     job.direct_params[3] = u.bgx[0] & 0x1FFu;
+ }
+ 
++#if defined(__SWITCH__) || defined(MPHNX_HOST)
++void hd_line_emit(const LineJob& job);   // MPH-nx native8f, after composite_adaptive_line
++#endif
+ void render_line_job(LineJob& job, LineScratch& sc) {
++#if defined(__SWITCH__) || defined(MPHNX_HOST)
++    if (job.hd_line) hd_line_emit(job);   // before the engine render touches job.unit
++#endif
+     if (!profiling()) {
+         if (job.direct_pixels) render_direct_window_line(job);
+         if (job.engine_active[0]) render_engine_line(job, 0, sc);
+@@ -1865,6 +1946,11 @@ struct Pool {
      std::condition_variable done_cv;
      std::vector<std::thread> threads;
      std::vector<std::unique_ptr<LineScratch>> scratch;
@@ -1759,7 +1847,7 @@ index c03b216..3cb4b13 100644
  };
  
  std::unique_ptr<Pool> g_pool;
-@@ -1883,7 +1912,8 @@ uint32_t g_staged_bank_mask = 0;
+@@ -1883,7 +1969,8 @@ uint32_t g_staged_bank_mask = 0;
  // Next ring index whose staged capture has still to be applied.
  uint64_t g_capture_apply_index = 0;
  
@@ -1769,7 +1857,7 @@ index c03b216..3cb4b13 100644
      // Registered with the always-on host sampler so that emu-thread time spent
      // WAITING on this pool is attributable to the pool's own host symbols
      // rather than showing up as an unexplained gap in the emu profile
-@@ -1899,6 +1929,7 @@ void worker_main(Pool* pool, LineScratch* sc) {
+@@ -1899,6 +1986,7 @@ void worker_main(Pool* pool, LineScratch* sc) {
              uint64_t c = pool->claim.load(std::memory_order_acquire);
              const uint64_t h = pool->head.load(std::memory_order_acquire);
              if (c < h) {
@@ -1777,7 +1865,7 @@ index c03b216..3cb4b13 100644
                  if (pool->claim.compare_exchange_weak(
                          c, c + 1, std::memory_order_acq_rel,
                          std::memory_order_acquire)) {
-@@ -1908,6 +1939,7 @@ void worker_main(Pool* pool, LineScratch* sc) {
+@@ -1908,6 +1996,7 @@ void worker_main(Pool* pool, LineScratch* sc) {
                  }
                  continue;
              }
@@ -1785,7 +1873,7 @@ index c03b216..3cb4b13 100644
              std::unique_lock<std::mutex> lock(pool->m);
              if (pool->stop.load(std::memory_order_acquire)) return;
              if (pool->claim.load(std::memory_order_acquire) >=
-@@ -1919,6 +1951,7 @@ void worker_main(Pool* pool, LineScratch* sc) {
+@@ -1919,6 +2008,7 @@ void worker_main(Pool* pool, LineScratch* sc) {
          }
          if (!have) continue;
          render_line_job(pool->jobs[index % kJobSlots], *sc);
@@ -1793,7 +1881,7 @@ index c03b216..3cb4b13 100644
          pool->done.fetch_add(1, std::memory_order_acq_rel);
          {
              std::lock_guard<std::mutex> lock(pool->m);
-@@ -1973,7 +2006,7 @@ void start_pool() {
+@@ -1973,7 +2063,7 @@ void start_pool() {
      for (unsigned i = 0; i < n; ++i)
          pool->scratch.push_back(std::make_unique<LineScratch>());
      for (unsigned i = 0; i < n; ++i)
@@ -1802,7 +1890,7 @@ index c03b216..3cb4b13 100644
  }
  
  // Apply every staged capture up to (not including) `target`, in ring order.
-@@ -2079,7 +2112,44 @@ void submit_line(int y) {
+@@ -2079,7 +2169,45 @@ void submit_line(int y) {
          head = pool->head.load(std::memory_order_relaxed);
      }
      LineJob& job = pool->jobs[head % kJobSlots];
@@ -1832,6 +1920,7 @@ index c03b216..3cb4b13 100644
 +                        if (p) sn.page_mask |= 1ull << ((p - base) >> 14);
 +                }
 +            }
++            g_po_page_union |= g_po_snap[next].page_mask;   // MPH-nx native8f
 +            g_po_cur = next;
 +            g_po_gen_taken = g_nx_po_generation;
 +            ++g_po_snapshots;
@@ -1847,7 +1936,7 @@ index c03b216..3cb4b13 100644
      if (line_reads_staged_bank(job)) {
          drain_pool(NDS_GPU2D_FENCE_CAPTURE);
          // The drain does not move head, so the reserved slot is still ours.
-@@ -2090,6 +2160,16 @@ void submit_line(int y) {
+@@ -2090,6 +2218,16 @@ void submit_line(int y) {
      // Publish under the mutex: a worker that has already evaluated its
      // predicate and is between that check and its wait would otherwise miss
      // the notification and sleep with work queued.
@@ -1864,7 +1953,7 @@ index c03b216..3cb4b13 100644
      {
          std::lock_guard<std::mutex> lock(pool->m);
          pool->head.store(head + 1, std::memory_order_release);
-@@ -2098,6 +2178,9 @@ void submit_line(int y) {
+@@ -2098,6 +2236,9 @@ void submit_line(int y) {
      if (job.cap)
          nds_gpu2d_staged_captures.store(1u, std::memory_order_relaxed);
      ++g_threaded_lines;
@@ -1874,12 +1963,14 @@ index c03b216..3cb4b13 100644
      pool->work_cv.notify_one();
  }
  
-@@ -2194,6 +2277,108 @@ const char* nds_gpu2d_fence_cause_name(uint32_t index) {
+@@ -2194,6 +2335,129 @@ const char* nds_gpu2d_fence_cause_name(uint32_t index) {
  }
  
  void nds_gpu2d_drain(uint32_t cause) { drain_pool(cause); }
 +#if defined(__SWITCH__) || defined(MPHNX_HOST)
 +bool g_nx_2d_async = true;
++bool g_nx_cow = true;
++bool g_nx_hd_lines = true;
 +uint64_t g_nx_po_generation = 0;
 +bool nds_gpu2d_lcdc_read_by_2d() {
 +    const Unit& a = g_unit[0];
@@ -1924,23 +2015,42 @@ index c03b216..3cb4b13 100644
 +        if (pool->busy[w].load(std::memory_order_seq_cst) < n) return false;
 +    return true;
 +}
++// MPH-nx native8f: every job below the returned index has finished. Read
++// once per write instead of once per snapshot. Stale (smaller) values only
++// make it more conservative; acquire pairs with the workers' stores.
++uint64_t jobs_done_floor(Pool* pool) {
++    uint64_t f = pool->claim.load(std::memory_order_acquire);
++    for (unsigned w = 0; w < Pool::kMaxWorkers; ++w)
++        f = std::min(f, pool->busy[w].load(std::memory_order_acquire));
++    return f;
++}
 +}
 +bool nds_gpu2d_cow_page(const uint8_t* page) {
 +    Pool* const pool = g_pool.get();
 +    if (!pool) return false;
 +    const unsigned p = static_cast<unsigned>((page - nds_vram_base()) >> 14);
 +    if (p >= 64) return false;
++    // Fast exit: no snapshot that may still be read refers to this page.
++    if (!((g_po_page_union >> p) & 1u)) return true;
++    const uint64_t floor = jobs_done_floor(pool);
 +    uint32_t which = 0;
 +    uint64_t last = 0;
 +    bool overlap = false;
++    uint64_t live_union = 0;
 +    for (int i = 0; i < kPoSnaps; ++i) {
-+        const PoSnap& sn = g_po_snap[i];
-+        if (!sn.last_job || !((sn.page_mask >> p) & 1u)) continue;
-+        if (jobs_done_below(pool, sn.last_job)) continue;   // last_job = index + 1
++        PoSnap& sn = g_po_snap[i];
++        if (!sn.last_job) continue;
++        // A finished snapshot drops out of the union; the current one stays,
++        // since lines latched from now on still use its views.
++        if (sn.last_job <= floor && i != g_po_cur) continue;
++        live_union |= sn.page_mask;
++        if (!((sn.page_mask >> p) & 1u)) continue;
++        if (sn.last_job <= floor) continue;   // last_job = index + 1
 +        which |= 1u << i;
 +        last = std::max(last, sn.last_job);
 +        overlap |= sn.overlap;
 +    }
++    g_po_page_union = live_union;
 +    if (!which) return true;
 +    if (overlap) { ++g_cow_fallbacks; return false; }
 +    CowSlot* slot = nullptr;
@@ -1983,7 +2093,7 @@ index c03b216..3cb4b13 100644
  
  void nds_gpu2d_set_threaded(bool enabled, unsigned workers) {
      if (g_threaded_requested == enabled &&
-@@ -2447,6 +2632,11 @@ void nds_gpu2d_finish_frame(){
+@@ -2447,6 +2711,11 @@ void nds_gpu2d_finish_frame(){
      g_front ^= 1;
  }
  void nds_gpu2d_vblank(){
@@ -1995,11 +2105,109 @@ index c03b216..3cb4b13 100644
      drain_pool(NDS_GPU2D_FENCE_FRAME);
      // melonDS Unit::VBlank: the capture enable bit auto-clears at line 192
      // only if it latched at line 0 this frame.
+@@ -2575,6 +2844,9 @@ struct AdaptiveCtx {
+     // the survivor layers are consumed; the adaptive RGB image is discarded.
+     bool metadata_only = false;
+     uint32_t front = 0;
++    // MPH-nx native8f: HD surfaces to write (null: the present-time globals).
++    uint32_t* hd_top_out = nullptr;
++    uint32_t* hd_below_out = nullptr;
+ };
+ 
+ void composite_adaptive_line(const AdaptiveCtx& c, int y,
+@@ -2746,10 +3018,12 @@ void composite_adaptive_line(const AdaptiveCtx& c, int y,
+         if (emit_hd) {
+             const size_t o = (static_cast<size_t>(y) * output_width + x)
+                              * 2u;
+-            g_hd_top_pixels[o] = top.color;
+-            g_hd_top_pixels[o + 1] = hd_meta(top, window_mask);
+-            g_hd_below_pixels[o] = below.color;
+-            g_hd_below_pixels[o + 1] = hd_meta(below, window_mask);
++            uint32_t* const ht = c.hd_top_out ? c.hd_top_out : g_hd_top_pixels.data();
++            uint32_t* const hb = c.hd_below_out ? c.hd_below_out : g_hd_below_pixels.data();
++            ht[o] = top.color;
++            ht[o + 1] = hd_meta(top, window_mask);
++            hb[o] = below.color;
++            hb[o + 1] = hd_meta(below, window_mask);
+         }
+         // The native-width caller returns its separate canonical framebuffer
+         // even if enhanced presentation rejects this frame. Do not complete an
+@@ -2773,6 +3047,38 @@ void composite_adaptive_line(const AdaptiveCtx& c, int y,
+ }
+ 
+ 
++#if defined(__SWITCH__) || defined(MPHNX_HOST)
++// MPH-nx native8f: one line of HD layer surfaces from the line job's latched
++// state, run on whichever thread renders the line.
++void hd_line_emit(const LineJob& job) {
++    static thread_local AdaptiveScratch* scratch = new AdaptiveScratch();
++    const Unit& u = job.unit[0];
++    const uint32_t b = job.buffer & 1u;
++    AdaptiveCtx ctx{};
++    ctx.u = &u;
++    ctx.palette = job.palette[0];
++    ctx.oam = job.oam[0];
++    ctx.vram = job.vram[0];
++    ctx.dst = nullptr;
++    ctx.output_width = 256;
++    ctx.extra = 0;
++    ctx.backdrop = Pixel{rgb6(view16(job.palette[0], 0)), 0x20u, 0, 4, 5, true};
++    ctx.prio3d = static_cast<uint8_t>(u.bgcnt[0] & 3u);
++    ctx.mbmode = u.master_bright >> 14;
++    ctx.mb = std::min<uint32_t>(16, u.master_bright & 0x1Fu);
++    ctx.window_state = NdsGpu2dWindowState{u.dispcnt, u.win};
++    for (int bg = 1; bg < 4; ++bg)
++        if (u.dispcnt & (0x100u << bg)) ctx.hud_bgs[ctx.hud_bg_count++] = bg;
++    ctx.snapshot_matches = false;
++    ctx.emit_hd = true;
++    ctx.metadata_only = true;
++    ctx.front = 0;
++    ctx.hd_top_out = g_hdl_top[b].data();
++    ctx.hd_below_out = g_hdl_below[b].data();
++    composite_adaptive_line(ctx, job.y, *scratch);
++}
++#endif
++
+ // ---- Adaptive compositor band pool --------------------------------------
+ // A second, smaller pool than the scanline one, and deliberately so: the two
+ // never run at the same time (the compositor runs at present, after the frame
+@@ -2955,6 +3261,31 @@ const uint32_t* nds_gpu2d_adaptive_framebuffer(int screen, uint16_t* width) {
+         if (width) *width = 256;
+         return native;
+     }
++#if defined(__SWITCH__) || defined(MPHNX_HOST)
++    // MPH-nx native8f: the surfaces were built with the frame's own lines.
++    if (output_width == 256 && g_nx_hd_lines) {
++        if (width) *width = 256;
++        const uint32_t b = static_cast<uint32_t>(g_front) & 1u;
++        if (engine == 0 && screen == 0 && !g_adaptive_skybox_fill && g_hdl_ok[b] &&
++            g_hdl_top[b].size() == 256u * 192u * 2u) {
++            const HdlParams& hp = g_hdl_params[b];
++            g_hd_frame.top_pixels = g_hdl_top[b].data();
++            g_hd_frame.below_pixels = g_hdl_below[b].data();
++            g_hd_frame.width = 256;
++            g_hd_frame.priority_3d = hp.prio3d;
++            g_hd_frame.order_3d = 1u;
++            g_hd_frame.bldcnt = hp.bldcnt;
++            g_hd_frame.master_bright = hp.master_bright;
++            g_hd_frame.eva = hp.eva;
++            g_hd_frame.evb = hp.evb;
++            g_hd_frame.evy = hp.evy;
++            g_hd_frame.render_xpos = 0;
++            g_hd_frame_valid = true;
++            ++g_hd_frames;
++        }
++        return native;
++    }
++#endif
+ 
+     AdaptiveFrame& adaptive = g_adaptive_frame[screen & 1];
+     if (width) *width = static_cast<uint16_t>(output_width);
 diff --git a/runner/src/gpu2d.h b/runner/src/gpu2d.h
-index 991071a..868afa4 100644
+index 991071a..f086d1b 100644
 --- a/runner/src/gpu2d.h
 +++ b/runner/src/gpu2d.h
-@@ -16,6 +16,22 @@
+@@ -16,6 +16,24 @@
  //
  // See docs/device_work_parallelization.md.
  extern std::atomic<uint32_t> nds_gpu2d_jobs_outstanding;
@@ -2009,6 +2217,8 @@ index 991071a..868afa4 100644
 +// only when they can reach a queued line; VBlank no longer waits for the
 +// frame's lines (the 263->0 frame flip and presentation still do).
 +extern bool g_nx_2d_async;
++extern bool g_nx_cow;                       // MPH-nx native8f: VRAM copy-on-write (off: drain as native7)
++extern bool g_nx_hd_lines;                  // MPH-nx native8f: per-line HD layer surfaces
 +extern uint64_t g_nx_po_generation;          // bumped by every palette/OAM write
 +bool nds_gpu2d_lcdc_read_by_2d();            // display mode 2 or a capture reads LCDC
 +bool nds_gpu2d_lcdc_bank_used_by_2d(unsigned bank);  // that LCDC bank (A-D) is read or captured into
@@ -3387,7 +3597,7 @@ index 333067f..284921a 100644
  // top width so per-room sub-frusta and entity sphere culling cover the whole
  // band. `adaptive_width` must equal the host 3D render width.
 diff --git a/runner/src/vram.cpp b/runner/src/vram.cpp
-index ed90652..16bf773 100644
+index ed90652..e03c0dc 100644
 --- a/runner/src/vram.cpp
 +++ b/runner/src/vram.cpp
 @@ -5,6 +5,8 @@
@@ -3519,7 +3729,7 @@ index ed90652..16bf773 100644
 +            const bool lcdc = (addr & 0x00E00000u) >= 0x00800000u;
 +            unsigned lbank = 9; uint32_t loff = 0;
 +            if (lcdc && !lcdc_bank(addr, lbank, loff)) lbank = 9;
-+            if (cpu != 7 && !lcdc && region == 0x06000000u) {
++            if (g_nx_cow && cpu != 7 && !lcdc && region == 0x06000000u) {
 +                // MPH-nx native8: BG/OBJ write. Copy the page for the queued
 +                // lines that still read it instead of waiting for them.
 +                uint16_t mask = 0;
@@ -3537,7 +3747,7 @@ index ed90652..16bf773 100644
 +                } else if (mask) {
 +                    nds_gpu2d_drain(NDS_GPU2D_FENCE_VRAM);
 +                }
-+            } else if (cpu != 7 && lcdc && lbank < 9 && !nds_gpu2d_lcdc_bank_used_by_2d(lbank)) {
++            } else if (g_nx_cow && cpu != 7 && lcdc && lbank < 9 && !nds_gpu2d_lcdc_bank_used_by_2d(lbank)) {
 +                // MPH-nx native8: an LCDC write reaches queued lines only
 +                // through views latched while the bank was BG/OBJ-mapped
 +                // (a remap no longer fences): copy that page for them.
