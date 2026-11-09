@@ -69,3 +69,19 @@ in-game speed work is done.
   /switch/mph-nx/developer.on exists), so test builds can still flip them.
 - Saved settings from test builds that changed a hidden option are reset to
   the defaults on first start of the release build.
+
+## 6. Save states
+- Mark (2026-11-09): wanted if doable. Yes, with care.
+- The engine has save states (savestate.cpp, slots), made for its dispatcher
+  model where CPU state is in memory between slices. In MPH-nx both CPUs are
+  native code on coroutine stacks, so mid-frame some guest state is in host
+  registers and stack frames.
+- Plan: on save, ask both CPUs to unwind to their top-level loop (the redirect
+  path already does this about 1,100 times a second), snapshot memory, CPU
+  context and devices, plus our own state (2D line workers, COW pages, HD
+  layers, overlay residency, deko3d renderer). On load, restore and resume
+  each CPU at its saved PC through the dispatcher; a mid-function PC runs on
+  the fallback until that function returns.
+- States are tied to the build (engine identity check). About 6 to 7 MB each.
+- Port menu: save/load slots; optional quick-save/quick-load buttons.
+- Check in the cloud first: save, load, compare the next frames.
