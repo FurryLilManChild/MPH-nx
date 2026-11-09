@@ -8,7 +8,7 @@
 
 namespace {
 
-enum NavKind { kNavPort, kNavPopup, kNavGame, kNavStarmap };
+enum NavKind { kNavPort, kNavPopup, kNavGame, kNavStarmap, kNavFiles };
 
 struct NavRect {
     int x0, y0, x1, y1;   // inclusive, DS bottom-screen pixels
@@ -195,6 +195,24 @@ void nx_menunav_detect(const uint32_t* bottom, int stride) {
         g.candidate = -1;
         g.sel = -1;
     }
+    // File select: the game rings the highlighted file in red just above
+    // its circle (orange circles have almost no blue; the ring does).
+    if (const NavScreen* sc = cur(); sc && sc->kind == kNavFiles) {
+        int best = -1, best_n = 2;
+        for (int t = 0; t < sc->nt; ++t) {
+            const NavRect& r = kNavRects[sc->t0 + t];
+            const int cx = (r.x0 + r.x1) / 2;
+            int n = 0;
+            for (int y = r.y0 - 14; y < r.y0; ++y)
+                for (int x = cx - 14; x <= cx + 14; ++x) {
+                    const uint32_t p = bottom[y * stride + x];
+                    const int rr = (p >> 16) & 0xFF, gg = (p >> 8) & 0xFF, b = p & 0xFF;
+                    if (rr >= 150 && b >= 25 && rr - gg >= 90) ++n;
+                }
+            if (n > best_n) { best_n = n; best = t; }
+        }
+        if (best >= 0) g.sel = best;
+    }
     // Options: where the sensitivity fill starts (bright cyan at x 131).
     g.slider_top = -1;
     if (const NavScreen* sc = cur(); sc && std::strcmp(sc->name, "options") == 0) {
@@ -240,6 +258,10 @@ NxNavOut nx_menunav_input(const NxNavPad& pad) {
 
     if (sc->kind == kNavGame) {
         if (pad.a) out.ds_keys |= 1u;   // DS A while Switch A is held
+        return out;
+    }
+    if (sc->kind == kNavFiles) {
+        if (a_edge && g.nsteps == 0 && g.cooldown == 0 && g.sel >= 0) tap_target(g.sel);
         return out;
     }
     if (sc->kind == kNavStarmap) {

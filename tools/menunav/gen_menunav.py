@@ -41,7 +41,7 @@ def fingerprint(px, rect):
             out.append(tuple(v // n for v in s))
     return out
 
-KIND = {'nav': 'kNavPort', 'popup': 'kNavPopup', 'game': 'kNavGame', 'starmap': 'kNavStarmap'}
+KIND = {'nav': 'kNavPort', 'popup': 'kNavPopup', 'game': 'kNavGame', 'starmap': 'kNavStarmap', 'files': 'kNavFiles'}
 fps = []   # flat list of (r,g,b)
 def add_fp(px, rect):
     off = len(fps)

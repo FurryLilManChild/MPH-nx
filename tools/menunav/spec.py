@@ -1,5 +1,5 @@
 # Screen specs. Rects are DS bottom-screen pixels, inclusive. 'src' = capture the fingerprint comes from.
-# kind: 'nav' (port highlight), 'popup' (highlight, B = back target), 'game' (A -> DS A), 'starmap'
+# kind: 'nav' (port highlight), 'popup' (highlight, B = back target), 'game' (A -> DS A), 'starmap', 'files' (A taps the game's red-ringed file)
 SCREENS = [
  dict(name='exitsure', kind='popup', src='012', keys=[], back='no', default='yes',
       targets=[('yes',(55,166,87,178),True),('no',(119,166,151,178),True)]),
@@ -35,6 +35,9 @@ SCREENS = [
                ('c3',(145,33,172,59),True),('c4',(204,33,231,59),True)]),
  dict(name='starmap', kind='starmap', src='003', keys=[(80,2,250,12),(81,16,248,24)], back=None, default='land',
       targets=[('land',(0,137,71,183),False)]),
+ # File select: same back arrow as the mode select, so it is told apart by the Movies icon and comes first.
+ # The game draws a red ring on the highlighted file; Switch A taps that file (DS A here opens Movies).
+ dict(name='files', kind='files', src='002', keys=[(8,160,31,184),(215,156,240,180)], back=None, default='fileB',
+      targets=[('fileA',(14,38,82,106),False),('fileB',(94,38,162,106),False),('fileC',(174,38,242,106),False)]),
  dict(name='title', kind='game', src='001', keys=[(8,160,31,184)], back=None, default=None, targets=[]),
- dict(name='files', kind='game', src='002', keys=[(8,160,31,184)], back=None, default=None, targets=[]),
 ]
