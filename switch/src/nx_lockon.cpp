@@ -182,6 +182,14 @@ NxLockOut nx_lockon_frame(bool held) {
     const float ang_want[2] = {std::atan2(v[0], v[2]), std::asin(v[1] / d)};
     const float err[2] = {wrap(ang_want[0] - ang_face[0]), ang_want[1] - ang_face[1]};
     g.last_err = std::sqrt(err[0] * err[0] + err[1] * err[1]);
+    // native19 safety: a lock that ends up far off target (wrong direction
+    // learned, or a camera field that is not the view) lets go instead of
+    // spinning the view around.
+    if (g.last_err > 1.2f) {
+        g.target = 0; g.spent = true; ++g.lost;
+        std::fprintf(stderr, "[mph-nx] lockon: released, %.0f degrees off target\n", g.last_err * 57.2958f);
+        return out;
+    }
 
     // native19: fixed, gentle speed. Only the direction of each axis is
     // learned (from how the view moved after a command), and it freezes once
