@@ -393,6 +393,7 @@ void present_now(const NxPresentFrame& f)
             // native8c: wait for the compose and save what it produced
             g_cmd.signalFence(g_fence[slot], true);
             g_queue.submitCommands(g_cmd.finishList());
+            g_queue.flush();   // native8d: without this the wait never returned (native8c froze)
             g_fence[slot].wait();
             g_cmd.clear();
             g_cmd.addMemory(g_cmd_mem, slot * kCmdSlotSize, kCmdSlotSize);

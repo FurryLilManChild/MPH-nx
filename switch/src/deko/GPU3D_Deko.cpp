@@ -1537,12 +1537,16 @@ void DekoRenderer::ApplyScale()
 
 bool DekoRenderer::HiresOutput(uint64_t* gpuAddr, int* w, int* h)
 {
-    if (ShownSlot < 0) { StatHiresNo[0]++; return false; }
-    if (!OutputWaited) { StatHiresNo[1]++; return false; }
-    if (SlotScale[ShownSlot] == 0) { StatHiresNo[2]++; return false; }
+    // native8d: MPH draws 3D at 30 fps and submits each new frame at
+    // VBlank, before the frame is presented. That cleared OutputWaited, so
+    // every other presented frame fell back to the 1x image. Use the slot
+    // the 2D engine actually composited (HiresSlot) while 3D is on screen.
+    if (HiresSlot < 0) { StatHiresNo[0]++; return false; }
+    if (++HiresAge > 8) { StatHiresNo[1]++; return false; }   // no 3D lines read lately
+    if (SlotScale[HiresSlot] == 0) { StatHiresNo[2]++; return false; }
     StatHiresYes++;
-    const int sc = SlotScale[ShownSlot];
-    *gpuAddr = NxDeko::DataHeap->GpuAddr(HiresOutputMemory[ShownSlot]);
+    const int sc = SlotScale[HiresSlot];
+    *gpuAddr = NxDeko::DataHeap->GpuAddr(HiresOutputMemory[HiresSlot]);
     static const int kW[5] = {256, 384, 512, 768, 1024}, kH[5] = {192, 288, 384, 576, 768};
     *w = kW[sc];
     *h = kH[sc];
@@ -1565,6 +1569,7 @@ u32* DekoRenderer::GetLine(int line)
 {
     if (OutputSlot < 0 || line < 0 || line >= 192)
         return DummyLine;
+    HiresAge = 0;
     if (!OutputWaited)
     {
         // One decision per frame. MPH-nx test10: if the GPU has not finished
@@ -1594,6 +1599,7 @@ u32* DekoRenderer::GetLine(int line)
                 FinalOutputFence[OutputSlot].wait();
         }
         OutputWaited = true;
+        HiresSlot = ShownSlot;
         // The GPU wrote this slot behind the CPU cache: drop stale lines.
         armDCacheFlush(NxDeko::ReadbackHeap->CpuAddr<void>(FinalOutputMemory[ShownSlot]), 256*192*4);
     }
@@ -1631,14 +1637,14 @@ void nx_deko_set_scale(int scale)
 // native8c diagnostics
 const void* melonDS::DekoRenderer::HiresCpu()
 {
-    if (ShownSlot < 0) return nullptr;
-    return NxDeko::DataHeap->CpuAddr<void>(HiresOutputMemory[ShownSlot]);
+    if (HiresSlot < 0) return nullptr;
+    return NxDeko::DataHeap->CpuAddr<void>(HiresOutputMemory[HiresSlot]);
 }
 void nx_deko_stats(char* buf, int n)
 {
     melonDS::DekoRenderer* r = melonDS::g_nx_deko_renderer;
     if (!r) { std::snprintf(buf, n, "none"); return; }
-    std::snprintf(buf, n, "size %d (%dx%d) rendered 1x %u 1.5x %u 2x %u 3x %u 4x %u  hires yes %u no: noslot %u notwaited %u slot1x %u  sets %d%d%d%d%d",
+    std::snprintf(buf, n, "size %d (%dx%d) rendered 1x %u 1.5x %u 2x %u 3x %u 4x %u  hires yes %u no: noslot %u stale %u slot1x %u  sets %d%d%d%d%d",
                   r->CurScale, r->ScrW, r->ScrH,
                   r->StatRendered[0], r->StatRendered[1], r->StatRendered[2], r->StatRendered[3], r->StatRendered[4],
                   r->StatHiresYes, r->StatHiresNo[0], r->StatHiresNo[1], r->StatHiresNo[2],

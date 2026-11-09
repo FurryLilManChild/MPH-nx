@@ -101,6 +101,11 @@ private:
     int PrevSlot = -1;        // the frame before it (finished by now)
     int SlotSwap[2] = {-1, -1}; // POWCNT1 bit 15 when each slot was rendered
     int ShownSlot = -1;       // what GetLine returns this frame
+    // native8d: the slot the 2D engine composited last, kept for the
+    // presenter after a new 3D frame is submitted (which clears
+    // OutputWaited), and how many presented frames ago GetLine last ran.
+    int HiresSlot = -1;
+    int HiresAge = 1000;
     bool OutputWaited = false;
 public:
     unsigned long long LateFrames = 0;  // frames shown from PrevSlot
