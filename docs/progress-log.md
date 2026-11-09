@@ -2,6 +2,11 @@
 
 Newest first.
 
+## 2026-11-09: switch-native14 (audio stretching; logbook list and Launch Ship pop-up)
+
+- native13 (Mark): every menu-button mapping worked as intended. Two new captures: the logbook list (categories, five rows, four scroll buttons) and the Launch Ship confirm. Both added (16 captures, each recognised as itself); detection now runs in list order only, so the logbook list (more specific) wins over the category screen.
+- Audio stretching (QoL item 1 in Mark's order): switch/src/nx_stretch.h is SA-nx's WSOLA stretcher (same authors). In drain_audio, after the 0.6% drift control, the mixer output goes through it; the ratio follows a short average of the queue (1x at or above 3/4 of the 2048-frame target, up to 2.5x when empty, eased). Checked on test signals: ratio 1 passes through unchanged, 1.5x and 2x stay continuous. Log: "audio: stretched N ms (peak R) underruns U" every 10 s; toggle "Audio stretch".
+
 ## 2026-11-09: switch-native13 (controller for the touch-only menus)
 
 - Mark's L3 captures (14) and slide notes: title menus and the star map already move a highlight with the stick but nothing confirms; the landed ship menu, weapon select, logbook, options, the save/exit/enter-ship pop-ups and the scan arrows are touch only. Samus freezes while scan boxes and the enter-ship prompt are up. Wanted: stick/D-pad to move, Switch A to confirm, Switch B to go back (on his layout Switch A is morph and Switch B is jump by default).

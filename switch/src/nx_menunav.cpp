@@ -30,7 +30,7 @@ struct NavScreen {
 #include "nx_menunav_data.h"
 
 constexpr int kScreens = sizeof(kNavScreens) / sizeof(kNavScreens[0]);
-constexpr int kMaxTargets = 8;
+constexpr int kMaxTargets = 16;
 constexpr float kKeyMatch = 0.90f;
 constexpr float kTargetMatch = 0.85f;
 constexpr int kTol = 24;
@@ -169,9 +169,8 @@ void nx_menunav_detect(const uint32_t* bottom, int stride) {
     }
     bool vis[kMaxTargets] = {};
     int found = -1;
-    // The current screen first (keeps it stable), then the list in order:
-    // pop-ups come before the screens they cover.
-    if (g.screen >= 0 && screen_matches(bottom, stride, g.screen, vis)) found = g.screen;
+    // In list order: pop-ups come before the screens they cover, and more
+    // specific screens (the logbook list) before the ones they extend.
     for (int s = 0; found < 0 && s < kScreens; ++s) {
         bool v[kMaxTargets] = {};
         if (screen_matches(bottom, stride, s, v)) { found = s; std::memcpy(vis, v, sizeof vis); }

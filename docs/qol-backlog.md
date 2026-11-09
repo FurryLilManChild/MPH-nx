@@ -4,6 +4,7 @@ Started 2026-11-09 from Mark's list. Not scheduled yet; picked up once the
 in-game speed work is done.
 
 ## 1. Audio stretching through slow dips
+- native14: done (SA-nx's WSOLA stretcher in drain_audio).
 - Problem: when a frame runs long, the audio queue runs dry and the sound
   crackles.
 - Now: native9 steers the playback rate by at most 0.6% for clock drift only.
