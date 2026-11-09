@@ -47,6 +47,7 @@ in-game speed work is done.
   stay.
 
 ## 4. Lock-on targeting (as in the other Prime games)
+- native18: first version (hold ZL, adventure only, "LOCK" marker; reticle on the target later).
 - Hold a button (L, as in Prime 1 to 3) to lock onto the nearest visible
   enemy in front of Samus; the aim then tracks it and strafing circles it.
 - How: the game is native code with its memory in plain Switch memory, so

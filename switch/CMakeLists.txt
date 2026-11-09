@@ -156,7 +156,8 @@ set_source_files_properties("${_runner_dir}/src/main.cpp"
 target_sources(nds_runner PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/nx_main.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/nx_platform.c"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/nx_menunav.cpp")
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/nx_menunav.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/nx_lockon.cpp")
 target_compile_definitions(nds_runner PRIVATE MPHNX_VERSION="${MPHNX_ENGINE_TAG}")
 set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/nx_main.cpp" "${NDSRECOMP_ROOT}/runner/src/frontend.cpp" TARGET_DIRECTORY nds_runner
     APPEND PROPERTY COMPILE_DEFINITIONS MPHNX_LABEL="${MPHNX_VERSION}")

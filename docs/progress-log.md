@@ -2,6 +2,12 @@
 
 Newest first.
 
+## 2026-11-09: switch-native17 and native18 (HUD tweaks; lock-on)
+
+- native16 (Mark): "phenomenal first go at single screen"; D-pad weapons work. Asked for a bigger weapon section and no overlap between the radar and the game's morph-ball boost icon.
+- native17: weapon strip 2x; in morph ball (game memory, existing morph-state read) the radar moves to the top-right.
+- native18: lock-on (QoL item 4), switch/src/nx_lockon.cpp. Hold ZL in adventure play: the enemy nearest the centre of view (within 48 units and about 45 degrees) is locked, and each frame the aim counts that turn the camera toward it are added to the right stick's (the game's per-frame aim fields). Releasing ZL, the target dying or leaving range ends it. Memory layout from NoneGiven's MphRead (MIT): US Rev 1 = MphRead's European Rev 1 addresses minus 0xA0 in this region (players 0x020DAF94; the port's existing weapon addresses fall exactly on MphRead's CPlayer offsets; the ROM references the shifted players, frame count and game state words). Entity list head: 0x020E3E40 (shifted) checked first, 0x020E3EE0 second, by its ListHead type (27). Camera: CPlayer + 0x55C (position, facing at + 0x3C). Aim gain (counts per radian, and direction) is learned from how the view moved after each command. "LOCK" shows top-left while locked. Scan/fire default moved off ZL (ZR already scans in the visor); saved "Pad LT" scan/fire bindings are cleared. Port menu Options: "Lock-on (hold ZL)" toggle.
+
 ## 2026-11-09: switch-native16 (Top only + HUD layout, D-pad weapons)
 
 - native15 (Mark): audio stretch works; new port menu good. Log: dropouts fell from up to 68 per 10 s to a handful, inside the heaviest loads (about 19 fps), where the sound now fades.
