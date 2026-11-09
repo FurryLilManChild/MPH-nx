@@ -938,8 +938,19 @@ void DekoRenderer::RenderFrame(GPU& gpu)
     int numSetupIndices = 0;
 
     u32 curSlice = CmdMem.Begin(EmuCmdBuf);
-    const int hiBuf = HiresNext;
-    HiresNext = (HiresNext + 1) % HiresBuffers;
+    // native10: never draw into a buffer that is on screen (LockBuf), was
+    // just on screen (the presenter may still be reading it) or holds the
+    // newest finished frame (the next one GetLine will pick).
+    int hiBuf = HiresNext;
+    for (int i = 0; i < HiresBuffers; i++)
+    {
+        const int b = (HiresNext + i) % HiresBuffers;
+        if (b == LockBuf || b == LockBufPrev) continue;
+        if (OutputSlot >= 0 && b == SlotHires[OutputSlot]) continue;
+        hiBuf = b;
+        break;
+    }
+    HiresNext = (hiBuf + 1) % HiresBuffers;
     SlotHires[curSlice] = hiBuf;
 
     u32 numVariants = 0, prevVariant, prevTexLayer;
@@ -1548,10 +1559,10 @@ bool DekoRenderer::HiresOutput(uint64_t* gpuAddr, int* w, int* h)
     // the 2D engine actually composited (HiresSlot) while 3D is on screen.
     if (HiresSlot < 0) { StatHiresNo[0]++; return false; }
     if (++HiresAge > 8) { StatHiresNo[1]++; return false; }   // no 3D lines read lately
-    if (SlotScale[HiresSlot] == 0) { StatHiresNo[2]++; return false; }
+    if (LockBuf < 0 || LockScale == 0) { StatHiresNo[2]++; return false; }
     StatHiresYes++;
-    const int sc = SlotScale[HiresSlot];
-    *gpuAddr = NxDeko::DataHeap->GpuAddr(HiresOutputMemory[SlotHires[HiresSlot]]);
+    const int sc = LockScale;
+    *gpuAddr = NxDeko::DataHeap->GpuAddr(HiresOutputMemory[LockBuf]);
     static const int kW[5] = {256, 384, 512, 768, 1024}, kH[5] = {192, 288, 384, 576, 768};
     *w = kW[sc];
     *h = kH[sc];
@@ -1605,6 +1616,11 @@ u32* DekoRenderer::GetLine(int line)
         }
         OutputWaited = true;
         HiresSlot = ShownSlot;
+        // native10: lock the image itself, not the slot (see LockBuf).
+        if (LockBuf != SlotHires[ShownSlot]) LockBufPrev = LockBuf;
+        LockBuf = SlotHires[ShownSlot];
+        LockScale = SlotScale[ShownSlot];
+        LockSerial = SlotSerial[ShownSlot];
         // The GPU wrote this slot behind the CPU cache: drop stale lines.
         armDCacheFlush(NxDeko::ReadbackHeap->CpuAddr<void>(FinalOutputMemory[ShownSlot]), 256*192*4);
     }

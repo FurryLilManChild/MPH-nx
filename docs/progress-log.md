@@ -2,6 +2,12 @@
 
 Newest first.
 
+## 2026-11-09: switch-native10 (shaking: the real cause)
+
+- Mark: shaking still present in native8g and native9 at 2x. The native8g cadence stats showed it directly: in game at 2x, 600 presents per 10 s, each 3D frame on screen for one present, and 300 steps backwards. The presented 3D image alternated between the newest frame and the previous one.
+- Cause: the presenter looked up the 3D image through the slot the 2D engine composited (HiresSlot) at present time. MPH submits the next 3D frame at VBlank, before the present, and in steady pacing that frame goes into the very slot the 2D engine used (the previous slot is the one shown). So the present after a submit showed the brand-new frame, and the next one went back to the frame the 2D engine was showing: A A C B B D C C. At 1x the 3D lines are copied into the 2D frame while it is drawn, so 1x never showed it. The earlier theories (buffer reuse, present-time 2D layers, audio pacing) were real issues but not this one.
+- native10: GetLine locks the image itself (buffer, scale, frame number) when it picks the frame; the presenter uses that lock. A new 3D frame is never drawn into the locked buffer, the one locked before it (the presenter may still be reading it) or the newest finished frame's buffer. The cadence "backwards" count should drop from about 300 to near 0.
+
 ## 2026-11-08/09: switch-native8b to native8g (scaler fixes, menu speed, judder), switch-native9 (Switch clock, video DMA)
 
 - native8b: the 3x/4x shader sets were never loaded (the load loop stopped at 2x). Fixed; a set that fails to load keeps its size off.

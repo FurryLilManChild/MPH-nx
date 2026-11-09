@@ -76,7 +76,7 @@ public:
     // native8c diagnostics: frames rendered per size, and why HiresOutput
     // said no (0 no shown slot, 1 not waited, 2 shown slot is 1x).
     unsigned StatRendered[5] = {}, StatHiresNo[3] = {}, StatHiresYes = 0;
-    uint32_t ShownSerial() const { return HiresSlot >= 0 ? SlotSerial[HiresSlot] : 0; }   // native8g
+    uint32_t ShownSerial() const { return HiresSlot >= 0 ? LockSerial : 0; }   // native8g/native10
 private:
     s32 Pos[10][2] = {};       // the current polygon's vertices at render size
 
@@ -114,6 +114,13 @@ private:
     int HiresSlot = -1;
     int HiresAge = 1000;
     uint32_t RenderSerial = 0, SlotSerial[2] = {0, 0};   // native8g: 3D frame numbers
+    // native10: the image the 2D engine composited, locked when GetLine
+    // picks it. HiresSlot alone was not enough: MPH submits its next 3D
+    // frame at VBlank into that same slot before the frame is presented,
+    // so the presenter showed the newer frame, then the older one again
+    // (3D stepped back on every other refresh: the shaking).
+    int LockBuf = -1, LockBufPrev = -1, LockScale = 0;
+    uint32_t LockSerial = 0;
     bool OutputWaited = false;
 public:
     unsigned long long LateFrames = 0;  // frames shown from PrevSlot
