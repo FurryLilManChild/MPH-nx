@@ -66,6 +66,9 @@ struct State {
     float omega[2] = {0.0f, 0.0f};   // view turn rate, radians per frame
     bool using_gun = false;
     float cam_yaw = 0.0f;
+    uint32_t cand[8] = {};
+    int ncand = 0;
+    uint32_t cand_base = 0;
 } g;
 
 bool find_head() {
@@ -170,6 +173,27 @@ NxLockOut nx_lockon_frame(bool held) {
     if (press)
         std::fprintf(stderr, "[mph-nx] lockon: camera %.2f %.2f %.2f  gun %.2f %.2f %.2f (length %.2f, agreement %.2f) -> steer %s\n",
                      face[0], face[1], face[2], gun[0], gun[1], gun[2], gl, gdot, use_gun ? "gun" : "camera");
+    if (press) {
+        // native22 diagnostic: every direction-shaped value in the player's
+        // data that points where the camera looks. The trace then shows how
+        // each one moves, to find the gun aim (it turns before the camera).
+        g.ncand = 0;
+        const uint32_t pb = kPlayers + idx * kPlayerStride;
+        for (uint32_t off = 0; off + 12 <= kPlayerStride && g.ncand < 8; off += 4) {
+            if (off >= kCamInfo && off < kCamInfo + 0x48) continue;   // the camera itself
+            float v[3];
+            rdvec(pb + off, v);
+            const float l = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+            if (l < 0.95f || l > 1.05f) continue;
+            const float d = (v[0] * face[0] + v[1] * face[1] + v[2] * face[2]) / l;
+            if (d < 0.9f) continue;
+            g.cand[g.ncand++] = off;
+            std::fprintf(stderr, "[mph-nx] lockon: candidate +%03X  %.3f %.3f %.3f  agreement %.3f\n",
+                         (unsigned)off, v[0], v[1], v[2], d);
+            off += 8;   // skip the rest of this vector
+        }
+        g.cand_base = pb;
+    }
     float pick_face[3] = {face[0], face[1], face[2]};
     if (use_gun) for (int i = 0; i < 3; ++i) face[i] = gun[i] / gl;
     g.using_gun = use_gun;
@@ -240,9 +264,11 @@ NxLockOut nx_lockon_frame(bool held) {
         // target where nothing is corrected (Mark's idea), so it holds still.
         const float lead = g.using_gun ? 0.0f : kLead;
         const float ahead = err[a] - g.omega[a] * lead;
-        const float box = g.using_gun ? 0.017f : 0.006f;
-        const float e = std::fabs(ahead) < box ? 0.0f : ahead;
-        float c = e * kGain * sgn * (g.using_gun ? 0.35f : 0.3f) + g.rem[a];
+        // Hold box (Mark's idea): one degree when steering the gun, three on
+        // the camera fallback, where corrections are also gentler.
+        const float box = g.using_gun ? 0.017f : 0.052f;
+        const float e = std::fabs(ahead) < box ? 0.0f : ahead - (ahead > 0 ? box : -box);
+        float c = e * kGain * sgn * (g.using_gun ? 0.35f : 0.2f) + g.rem[a];
         if (c > kMaxStep) c = kMaxStep;
         if (c < -kMaxStep) c = -kMaxStep;
         const float ci = std::trunc(c);
@@ -256,6 +282,17 @@ NxLockOut nx_lockon_frame(bool held) {
                      (int)cmd[0], (int)cmd[1],
                      ang_face[0] * 57.2958f, ang_face[1] * 57.2958f, g.cam_yaw * 57.2958f,
                      g.sign_acc[0] < 0 ? "-" : "+", g.sign_acc[1] < 0 ? "-" : "+");
+    if (g.trace > 0 && (g.trace % 3) == 0 && g.ncand > 0) {
+        char line[256];
+        int n = std::snprintf(line, sizeof line, "[mph-nx] lockon trace yaw: camera %.1f", g.cam_yaw * 57.2958f);
+        for (int i = 0; i < g.ncand && n < 220; ++i) {
+            float v[3];
+            rdvec(g.cand_base + g.cand[i], v);
+            n += std::snprintf(line + n, sizeof line - n, "  +%03X %.1f", (unsigned)g.cand[i],
+                               std::atan2(v[0], v[2]) * 57.2958f);
+        }
+        std::fprintf(stderr, "%s\n", line);
+    }
     if (g.trace > 0) --g.trace;
     ++g.frames;
     out.active = true;
