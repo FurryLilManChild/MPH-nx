@@ -21,7 +21,8 @@ constexpr uint32_t kPlayers = 0x020DAF94;
 constexpr uint32_t kPlayerStride = 0xF30;
 constexpr uint32_t kListHeads[2] = {0x020E3E40, 0x020E3EE0};   // shifted, unshifted
 constexpr uint32_t kCamInfo = 0x55C;      // CPlayer.CameraInfo
-constexpr uint32_t kGunVec = 0x64;        // CPlayer.Vec1 (gun aim direction)
+constexpr uint32_t kGunVec = 0x9C;        // aim direction the inputs turn at once (native22 log: it leads,
+                                          // +0xB4 follows halfway, the camera last; +0x64 points up)
 constexpr uint32_t kCamPos = 0x0, kCamFacing = 0x3C;
 // CEntity / CEnemyBase
 constexpr uint32_t kEntType = 0x0, kEntNext = 0x14;
@@ -65,6 +66,7 @@ struct State {
     int trace = 0;               // frames of per-lock trace left
     float omega[2] = {0.0f, 0.0f};   // view turn rate, radians per frame
     bool using_gun = false;
+    bool lock_gun = false;
     float cam_yaw = 0.0f;
     uint32_t cand[8] = {};
     int ncand = 0;
@@ -169,7 +171,10 @@ NxLockOut nx_lockon_frame(bool held) {
     for (float& f : face) f /= cl;
     g.cam_yaw = std::atan2(face[0], face[2]);
     const float gdot = gl > 0.5f ? (gun[0] * face[0] + gun[1] * face[1] + gun[2] * face[2]) / gl : -2.0f;
-    const bool use_gun = gl > 0.9f && gl < 1.1f && gdot > 0.9f;
+    // Decided at the press (they agree then); while locked the aim may run
+    // ahead of the camera, which is fine.
+    if (press) g.lock_gun = gl > 0.9f && gl < 1.1f && gdot > 0.8f;
+    const bool use_gun = g.lock_gun && gl > 0.9f && gl < 1.1f;
     if (press)
         std::fprintf(stderr, "[mph-nx] lockon: camera %.2f %.2f %.2f  gun %.2f %.2f %.2f (length %.2f, agreement %.2f) -> steer %s\n",
                      face[0], face[1], face[2], gun[0], gun[1], gun[2], gl, gdot, use_gun ? "gun" : "camera");
