@@ -158,13 +158,21 @@ NxLockOut nx_lockon_frame(bool held) {
     float gun[3];
     rdvec(kPlayers + idx * kPlayerStride + kGunVec, gun);
     const float gl = std::sqrt(gun[0] * gun[0] + gun[1] * gun[1] + gun[2] * gun[2]);
-    const bool use_gun = gl > 0.9f && gl < 1.1f;
+    // The camera picks the target (it is what you see); the gun steers only
+    // when it points the same way as the camera (native21 also picked with
+    // the gun and found nothing).
+    const float cl = std::sqrt(face[0] * face[0] + face[1] * face[1] + face[2] * face[2]);
+    if (cl < 0.5f) return out;
+    for (float& f : face) f /= cl;
     g.cam_yaw = std::atan2(face[0], face[2]);
-    if (use_gun) for (int i = 0; i < 3; ++i) face[i] = gun[i];
+    const float gdot = gl > 0.5f ? (gun[0] * face[0] + gun[1] * face[1] + gun[2] * face[2]) / gl : -2.0f;
+    const bool use_gun = gl > 0.9f && gl < 1.1f && gdot > 0.9f;
+    if (press)
+        std::fprintf(stderr, "[mph-nx] lockon: camera %.2f %.2f %.2f  gun %.2f %.2f %.2f (length %.2f, agreement %.2f) -> steer %s\n",
+                     face[0], face[1], face[2], gun[0], gun[1], gun[2], gl, gdot, use_gun ? "gun" : "camera");
+    float pick_face[3] = {face[0], face[1], face[2]};
+    if (use_gun) for (int i = 0; i < 3; ++i) face[i] = gun[i] / gl;
     g.using_gun = use_gun;
-    const float fl = std::sqrt(face[0] * face[0] + face[1] * face[1] + face[2] * face[2]);
-    if (fl < 0.5f) return out;
-    for (float& f : face) f /= fl;
 
     float tp[3];
     if (g.target && !enemy_alive(g.target, tp)) {
@@ -174,7 +182,7 @@ NxLockOut nx_lockon_frame(bool held) {
         std::fprintf(stderr, "[mph-nx] lockon: target lost\n");
     }
     if (!g.target && press && !g.spent) {
-        g.target = pick(cam, face);
+        g.target = pick(cam, pick_face);
         if (g.target) {
             ++g.locks;
             g.have_last = false;
