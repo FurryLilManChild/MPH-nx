@@ -2,6 +2,14 @@
 
 Newest first.
 
+## 2026-11-09: 0.5.0 public release build
+
+- Game bytes out of the .nro: the native build no longer links the legacy title banks (their validation arrays held about 4.4 MB of copied cartridge code; the native runtime never ran them). The native overlay table stores an FNV-1a 64 hash of each overlay's first 64 bytes instead of the bytes. build.sh fails a native build if any legacy bank symbol is linked.
+- Checks: host run to 3e9 cycles with and without the banks gives the same screen and the same state (only the 7-byte build id differs). A sample of 2,208 32-byte chunks from the game's ARM9, ARM7 and overlay binaries: native23 .nro 784 found, 0.5.0 .nro 0. The .nro went from 313 MB to 63 MB.
+- 0.5.0 build (sha256 50e1dc3f): version label 0.5.0, original hbmenu icon (switch/assets/icon.jpg, lock-on reticle, no game art), first launch defaults to Top only + HUD, lock-on press and trace logs only with developer.on.
+- Release package (C:\MPH-nx\out\sd-050 and MPH-nx-0.5.0.zip): .nro, game.toml, player README, LICENSES (GPL-3.0 for the combined work, third-party notices). Release notes in docs/release-0.5.0.md. Repo gets a GPL-3.0 LICENSE, since the .nro is a combined work with melonDS code.
+- Earlier the same day, native20 to native23 (lock-on): native20 lead compensation; native21 used player+0x64 (points up, broke picking); native22 camera picking, 3-degree hold box and a candidate scan (Mark: functional); native23 steers the aim vector at player+0x9C with a 1-degree box (Mark: "I freakin love it"). Boot white splash skipped since native22. Private backup of native23 kept on Mark's PC (not for upload).
+
 ## 2026-11-09: native18 lock-on results; switch-native19 prepared (save states, steadier lock-on)
 
 - native18 (Mark's video): lock engages (entity list found), but the view swings and climbs. The self-tuning aim gain had no protection against a camera that answers a frame or two late. Logs not in yet.

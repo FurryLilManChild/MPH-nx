@@ -15,6 +15,7 @@ struct NxLockOut {
 };
 
 extern bool g_nx_lockon;  // "Lock-on" toggle (default on)
+extern bool g_nx_lockon_debug;  // per-press and per-frame trace logs (developer.on only)
 
 // Once per frame. held: ZL is held and the game is in play (adventure only).
 NxLockOut nx_lockon_frame(bool held);

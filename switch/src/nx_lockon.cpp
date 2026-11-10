@@ -1,5 +1,6 @@
 // MPH-nx native18: lock-on targeting. See nx_lockon.h.
 #include "nx_lockon.h"
+bool g_nx_lockon_debug = false;   // set by frontend.cpp when developer.on exists
 
 #include <cmath>
 #include <cstdio>
@@ -175,10 +176,10 @@ NxLockOut nx_lockon_frame(bool held) {
     // ahead of the camera, which is fine.
     if (press) g.lock_gun = gl > 0.9f && gl < 1.1f && gdot > 0.8f;
     const bool use_gun = g.lock_gun && gl > 0.9f && gl < 1.1f;
-    if (press)
+    if (press && g_nx_lockon_debug)
         std::fprintf(stderr, "[mph-nx] lockon: camera %.2f %.2f %.2f  gun %.2f %.2f %.2f (length %.2f, agreement %.2f) -> steer %s\n",
                      face[0], face[1], face[2], gun[0], gun[1], gun[2], gl, gdot, use_gun ? "gun" : "camera");
-    if (press) {
+    if (press && g_nx_lockon_debug) {
         // native22 diagnostic: every direction-shaped value in the player's
         // data that points where the camera looks. The trace then shows how
         // each one moves, to find the gun aim (it turns before the camera).
@@ -215,7 +216,7 @@ NxLockOut nx_lockon_frame(bool held) {
         if (g.target) {
             ++g.locks;
             g.have_last = false;
-            g.trace = 120;
+            g.trace = g_nx_lockon_debug ? 120 : 0;   // per-frame trace: developer.on only
             std::fprintf(stderr, "[mph-nx] lockon: locked %08X (%u enemies in room)\n",
                          (unsigned)g.target, g.enemies_seen);
         } else {

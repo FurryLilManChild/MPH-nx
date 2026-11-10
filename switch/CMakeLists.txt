@@ -182,6 +182,8 @@ nx_generate_nacp(
     AUTHOR "FurryLilManChild"
     VERSION "${MPHNX_VERSION}")
 
+# 0.5.0: original hbmenu icon (lock-on reticle; no game artwork).
 nx_create_nro(nds_runner
     OUTPUT "${CMAKE_BINARY_DIR}/mph-nx.nro"
+    ICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/icon.jpg"
     NACP "${CMAKE_BINARY_DIR}/mph-nx.nacp")
