@@ -21,6 +21,7 @@ constexpr uint32_t kPlayers = 0x020DAF94;
 constexpr uint32_t kPlayerStride = 0xF30;
 constexpr uint32_t kListHeads[2] = {0x020E3E40, 0x020E3EE0};   // shifted, unshifted
 constexpr uint32_t kCamInfo = 0x55C;      // CPlayer.CameraInfo
+constexpr uint32_t kGunVec = 0x64;        // CPlayer.Vec1 (gun aim direction)
 constexpr uint32_t kCamPos = 0x0, kCamFacing = 0x3C;
 // CEntity / CEnemyBase
 constexpr uint32_t kEntType = 0x0, kEntNext = 0x14;
@@ -63,6 +64,8 @@ struct State {
     float last_err = 0.0f;
     int trace = 0;               // frames of per-lock trace left
     float omega[2] = {0.0f, 0.0f};   // view turn rate, radians per frame
+    bool using_gun = false;
+    float cam_yaw = 0.0f;
 } g;
 
 bool find_head() {
@@ -147,6 +150,18 @@ NxLockOut nx_lockon_frame(bool held) {
     float cam[3], face[3];
     rdvec(cam_base + kCamPos, cam);
     rdvec(cam_base + kCamFacing, face);
+    // native21: steer the gun's aim vector (CPlayer + 0x64, MphRead "Vec1",
+    // the player's _gunVec1), which an aim input turns at once. The camera
+    // follows it smoothly a few frames later, which is the momentum native19
+    // and native20 fought. Fall back to the camera if it does not look like
+    // a direction.
+    float gun[3];
+    rdvec(kPlayers + idx * kPlayerStride + kGunVec, gun);
+    const float gl = std::sqrt(gun[0] * gun[0] + gun[1] * gun[1] + gun[2] * gun[2]);
+    const bool use_gun = gl > 0.9f && gl < 1.1f;
+    g.cam_yaw = std::atan2(face[0], face[2]);
+    if (use_gun) for (int i = 0; i < 3; ++i) face[i] = gun[i];
+    g.using_gun = use_gun;
     const float fl = std::sqrt(face[0] * face[0] + face[1] * face[1] + face[2] * face[2]);
     if (fl < 0.5f) return out;
     for (float& f : face) f /= fl;
@@ -213,9 +228,13 @@ NxLockOut nx_lockon_frame(bool held) {
     float cmd[2];
     for (int a = 0; a < 2; ++a) {
         const float sgn = g.sign_acc[a] < 0.0f ? -1.0f : 1.0f;
-        const float ahead = err[a] - g.omega[a] * kLead;                  // error kLead frames from now
-        const float e = std::fabs(ahead) < 0.006f ? 0.0f : ahead;         // a third of a degree dead zone
-        float c = e * kGain * sgn * 0.3f + g.rem[a];
+        // The gun turns at once: no lead, and a one-degree box around the
+        // target where nothing is corrected (Mark's idea), so it holds still.
+        const float lead = g.using_gun ? 0.0f : kLead;
+        const float ahead = err[a] - g.omega[a] * lead;
+        const float box = g.using_gun ? 0.017f : 0.006f;
+        const float e = std::fabs(ahead) < box ? 0.0f : ahead;
+        float c = e * kGain * sgn * (g.using_gun ? 0.35f : 0.3f) + g.rem[a];
         if (c > kMaxStep) c = kMaxStep;
         if (c < -kMaxStep) c = -kMaxStep;
         const float ci = std::trunc(c);
@@ -224,10 +243,10 @@ NxLockOut nx_lockon_frame(bool held) {
         g.last_cmd[a] = ci;
     }
     if (g.trace > 0 && (g.trace % 3) == 0)
-        std::fprintf(stderr, "[mph-nx] lockon trace: err yaw %.1f pitch %.1f deg  turn %.2f %.2f deg/frame  cmd %d %d  view yaw %.1f pitch %.1f  dir %s%s\n",
-                     err[0] * 57.2958f, err[1] * 57.2958f, g.omega[0] * 57.2958f, g.omega[1] * 57.2958f,
+        std::fprintf(stderr, "[mph-nx] lockon trace (%s): err yaw %.1f pitch %.1f deg  turn %.2f %.2f deg/frame  cmd %d %d  view yaw %.1f pitch %.1f camera yaw %.1f  dir %s%s\n",
+                     g.using_gun ? "gun" : "camera", err[0] * 57.2958f, err[1] * 57.2958f, g.omega[0] * 57.2958f, g.omega[1] * 57.2958f,
                      (int)cmd[0], (int)cmd[1],
-                     ang_face[0] * 57.2958f, ang_face[1] * 57.2958f,
+                     ang_face[0] * 57.2958f, ang_face[1] * 57.2958f, g.cam_yaw * 57.2958f,
                      g.sign_acc[0] < 0 ? "-" : "+", g.sign_acc[1] < 0 ? "-" : "+");
     if (g.trace > 0) --g.trace;
     ++g.frames;
