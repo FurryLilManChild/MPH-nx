@@ -32,6 +32,7 @@ constexpr float kConeCos = 0.70f;         // about 45 degrees off the view
 constexpr int kMaxWalk = 600;
 constexpr float kGain = 100.0f;           // aim counts per radian (about one count per 0.6 degree)
 constexpr float kMaxStep = 6.0f;          // counts per frame: caps the turn speed
+constexpr float kLead = 8.0f;             // frames of view momentum to allow for
 
 const uint8_t* g_ram = nullptr;
 uint32_t g_len = 0;
@@ -61,6 +62,7 @@ struct State {
     unsigned locks = 0, lost = 0, frames = 0, enemies_seen = 0;
     float last_err = 0.0f;
     int trace = 0;               // frames of per-lock trace left
+    float omega[2] = {0.0f, 0.0f};   // view turn rate, radians per frame
 } g;
 
 bool find_head() {
@@ -161,7 +163,7 @@ NxLockOut nx_lockon_frame(bool held) {
         if (g.target) {
             ++g.locks;
             g.have_last = false;
-            g.trace = 60;
+            g.trace = 120;
             std::fprintf(stderr, "[mph-nx] lockon: locked %08X (%u enemies in room)\n",
                          (unsigned)g.target, g.enemies_seen);
         } else {
@@ -196,19 +198,24 @@ NxLockOut nx_lockon_frame(bool held) {
     // it is clear, so a lagging camera cannot make the lock push harder and
     // harder (native18 swung around).
     for (int a = 0; a < 2; ++a) {
+        const float moved = g.have_last ? wrap(ang_face[a] - g.last_ang[a]) : 0.0f;
         if (g.have_last && std::fabs(g.last_cmd[a]) >= 1.0f && std::fabs(g.sign_acc[a]) < 4.0f) {
-            const float moved = wrap(ang_face[a] - g.last_ang[a]);
             if (std::fabs(moved) > 0.002f)
                 g.sign_acc[a] += ((g.last_cmd[a] / moved) > 0 ? 1.0f : -1.0f);
         }
+        // native20: the game's aim keeps turning for a while after an input
+        // (it has momentum), so steer on where the view will be in kLead
+        // frames rather than where it is now; native19 orbited the target.
+        g.omega[a] = g.have_last ? g.omega[a] * 0.5f + moved * 0.5f : 0.0f;
         g.last_ang[a] = ang_face[a];
     }
     g.have_last = true;
     float cmd[2];
     for (int a = 0; a < 2; ++a) {
         const float sgn = g.sign_acc[a] < 0.0f ? -1.0f : 1.0f;
-        const float e = std::fabs(err[a]) < 0.008f ? 0.0f : err[a];       // half a degree dead zone
-        float c = e * kGain * sgn * 0.2f + g.rem[a];
+        const float ahead = err[a] - g.omega[a] * kLead;                  // error kLead frames from now
+        const float e = std::fabs(ahead) < 0.006f ? 0.0f : ahead;         // a third of a degree dead zone
+        float c = e * kGain * sgn * 0.3f + g.rem[a];
         if (c > kMaxStep) c = kMaxStep;
         if (c < -kMaxStep) c = -kMaxStep;
         const float ci = std::trunc(c);
@@ -216,9 +223,10 @@ NxLockOut nx_lockon_frame(bool held) {
         cmd[a] = ci;
         g.last_cmd[a] = ci;
     }
-    if (g.trace > 0 && (g.trace % 4) == 0)
-        std::fprintf(stderr, "[mph-nx] lockon trace: err yaw %.1f pitch %.1f deg  cmd %d %d  view yaw %.1f pitch %.1f  dir %s%s\n",
-                     err[0] * 57.2958f, err[1] * 57.2958f, (int)cmd[0], (int)cmd[1],
+    if (g.trace > 0 && (g.trace % 3) == 0)
+        std::fprintf(stderr, "[mph-nx] lockon trace: err yaw %.1f pitch %.1f deg  turn %.2f %.2f deg/frame  cmd %d %d  view yaw %.1f pitch %.1f  dir %s%s\n",
+                     err[0] * 57.2958f, err[1] * 57.2958f, g.omega[0] * 57.2958f, g.omega[1] * 57.2958f,
+                     (int)cmd[0], (int)cmd[1],
                      ang_face[0] * 57.2958f, ang_face[1] * 57.2958f,
                      g.sign_acc[0] < 0 ? "-" : "+", g.sign_acc[1] < 0 ? "-" : "+");
     if (g.trace > 0) --g.trace;

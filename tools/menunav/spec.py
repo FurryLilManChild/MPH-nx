@@ -36,9 +36,10 @@ SCREENS = [
                ('c3',(145,33,172,59),True),('c4',(204,33,231,59),True)]),
  dict(name='starmap', kind='starmap', src='003', keys=[(80,2,250,12),(81,16,248,24)], back=None, default='land',
       targets=[('land',(0,137,71,183),False)]),
- # File select: same back arrow as the mode select, so it is told apart by the Movies icon and comes first.
+ # File select: keyed on the letters A and C on their orange circles (the background behind the
+ # back arrow and the Movies icon changes colour all the time; native19 captures).
  # The game draws a red ring on the highlighted file; Switch A taps that file (DS A here opens Movies).
- dict(name='files', kind='files', src='002', keys=[(8,160,31,184),(215,156,240,180)], back=None, default='fileB',
+ dict(name='files', kind='files', src='002', keys=[(40,40,56,54),(200,40,216,54)], back=None, default='fileB',
       targets=[('fileA',(14,38,82,106),False),('fileB',(94,38,162,106),False),('fileC',(174,38,242,106),False)]),
  dict(name='title', kind='game', src='001', keys=[(8,160,31,184),(216,110,240,128)], back=None, default=None, targets=[]),
  # In-game play screen (cockpit frame): not a menu. Used by the Top only + HUD layout and the
