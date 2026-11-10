@@ -11,10 +11,19 @@ HOST_DIR="${HOST_DIR:-/home/claude/build/host}"
 ARM7_BANKS="${ARM7_BANKS:-/home/claude/build/host-arm7banks}"
 JOBS="${JOBS:-2}"
 
-if [ ! -d "$ARM7_BANKS" ]; then
+# ARM7_BANKS=none: no legacy title banks at all (the release shape).
+TITLE_ARGS=()
+if [ "$ARM7_BANKS" = none ]; then
+  :
+elif [ ! -d "$ARM7_BANKS" ]; then
   mkdir -p "$ARM7_BANKS"
   for f in "$MPH_ROOT"/generated/recomp/*arm7*; do ln -s "$f" "$ARM7_BANKS/"; done
   cp "$MPH_ROOT/generated/recomp/registration-order.txt" "$ARM7_BANKS/"
+fi
+if [ "$ARM7_BANKS" != none ]; then
+  TITLE_ARGS=(-DNDS_TITLE_BANK_DIR="$ARM7_BANKS" -DNDS_TITLE_ROM_SHA1=90164d1ac127ee5f9815ea4ae7de798c7b5fc629)
+else
+  TITLE_ARGS=(-DNDS_TITLE_BANK_DIR= -DNDS_TITLE_ROM_SHA1=)
 fi
 
 cmake -S "$HERE" -B "$HOST_DIR" -G Ninja -DCMAKE_BUILD_TYPE=Release \
@@ -22,8 +31,7 @@ cmake -S "$HERE" -B "$HOST_DIR" -G Ninja -DCMAKE_BUILD_TYPE=Release \
   -DNDSRECOMP_ROOT="$NDSRECOMP_ROOT" \
   -DMPHNX_NATIVE_DIR="$BUILD_DIR/nrgen" \
   -DNDS_GENERATED_DIR="$BUILD_DIR/gen" \
-  -DNDS_TITLE_BANK_DIR="$ARM7_BANKS" \
-  -DNDS_TITLE_ROM_SHA1=90164d1ac127ee5f9815ea4ae7de798c7b5fc629 \
+  "${TITLE_ARGS[@]}" \
   -DNDS_RECOMP_UI_ROOT="$MPH_ROOT/third_party/recomp-ui" \
   -DNDSRECOMP_COMPILE_JOBS="$JOBS" -DNDSRECOMP_LINK_JOBS=1
 ninja -C "$HOST_DIR" -j "$JOBS" nds_runner

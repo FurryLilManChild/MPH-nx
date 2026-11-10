@@ -75,17 +75,26 @@ static void ov_bounds() {
     }
 }
 
-static bool ov_present(const NrOverlay& o) {
+// Hash of the first 64 bytes at the overlay's load address (FNV-1a 64, the
+// same as tools/nrecomp/gen_all.py), compared with the generated one.
+static uint64_t ov_hash_at(uint32_t ram, bool* ok) {
+    uint64_t h = 0xCBF29CE484222325ull;
     for (uint32_t k = 0; k < 64; k += 4) {
-        const uint32_t a = o.ram + k;
+        const uint32_t a = ram + k;
         const uintptr_t b = nr_rd_tab[a >> 12];
-        uint32_t v;
-        if (!b) return false;
-        memcpy(&v, (const void*)(b + (a & 0xFFFu)), 4);
-        uint32_t e; memcpy(&e, o.head + k, 4);
-        if (v != e) return false;
+        if (!b) { *ok = false; return 0; }
+        uint8_t v[4];
+        memcpy(v, (const void*)(b + (a & 0xFFFu)), 4);
+        for (int i = 0; i < 4; ++i) h = (h ^ v[i]) * 0x100000001B3ull;
     }
-    return true;
+    *ok = true;
+    return h;
+}
+
+static bool ov_present(const NrOverlay& o) {
+    bool ok = false;
+    const uint64_t h = ov_hash_at(o.ram, &ok);
+    return ok && h == o.head_hash;
 }
 
 static void ov_identify() {
@@ -324,11 +333,11 @@ static void note_miss(uint32_t key, bool call = false) {
         for (uint32_t i = 0; i < nr_overlay_count; ++i) {
             const NrOverlay& o = nr_overlays[i];
             if (a < o.ram || a >= o.ram + o.size) continue;
-            uint32_t v = 0, e = 0;
-            if (const uintptr_t b = nr_rd_tab[o.ram >> 12]) memcpy(&v, (const void*)(b + (o.ram & 0xFFFu)), 4);
-            memcpy(&e, o.head, 4);
-            std::fprintf(stderr, "[native]   overlay %u: resident %d present %d first word %08X (expect %08X) lr %08X sp %08X\n",
-                         o.id, g_ov_resident[i], (int)ov_present(o), v, e, g_cpu.R[14], g_cpu.R[13]);
+            bool ok = false;
+            const uint64_t h = ov_hash_at(o.ram, &ok);
+            std::fprintf(stderr, "[native]   overlay %u: resident %d present %d head %016llX (expect %016llX) lr %08X sp %08X\n",
+                         o.id, g_ov_resident[i], (int)(ok && h == o.head_hash), (unsigned long long)h,
+                         (unsigned long long)o.head_hash, g_cpu.R[14], g_cpu.R[13]);
         }
     }
 }

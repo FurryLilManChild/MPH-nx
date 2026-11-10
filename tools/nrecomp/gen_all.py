@@ -34,6 +34,14 @@ def cname(prefix, f):
     return '%s_%08X_%s' % (prefix, f.entry, 't' if f.thumb else 'a')
 
 
+def fnv1a64(data):
+    # Overlay identity without embedding cartridge bytes (nr_runtime.cpp ov_present).
+    h = 0xCBF29CE484222325
+    for b in data:
+        h = ((h ^ b) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return h
+
+
 def main(rom, out):
     os.makedirs(out, exist_ok=True)
     # Files are rewritten only when their content changes, so the build
@@ -110,9 +118,8 @@ def main(rom, out):
         fh.write('const NrOverlay nr_overlays[] = {\n')
         for oid, ram, size, sig, head in ovmeta:
             tag = 'ov%02d' % oid
-            fh.write('  {%d, 0x%08Xu, 0x%Xu, nr_tab_%s, %d, {%s}},\n' % (
-                oid, ram, size, tag, len(tables[tag]),
-                ', '.join('0x%02X' % b for b in head[:64])))
+            fh.write('  {%d, 0x%08Xu, 0x%Xu, nr_tab_%s, %d, 0x%016XULL},\n' % (
+                oid, ram, size, tag, len(tables[tag]), fnv1a64(head[:64])))
         fh.write('};\nconst uint32_t nr_overlay_count = %d;\n' % len(ovmeta))
     for tag, (nf, ni, ne) in stats.items():
         print('%-7s %5d functions %7d instructions %6d entries' % (tag, nf, ni, ne))

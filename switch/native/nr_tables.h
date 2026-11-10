@@ -8,7 +8,8 @@ typedef struct NrOverlay {
     uint32_t id, ram, size;
     const NrEntry* tab;
     uint32_t count;
-    uint8_t head[64];          /* first 64 bytes of the overlay: identifies it in RAM */
+    uint64_t head_hash;        /* FNV-1a 64 of the overlay's first 64 bytes: identifies it in RAM
+                                  (a hash, so the build carries no cartridge bytes) */
 } NrOverlay;
 extern const NrEntry nr_tab_static[];
 extern const uint32_t nr_tab_static_count;

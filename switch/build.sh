@@ -112,6 +112,15 @@ mkdir -p "$GEN"
   --bin "$NDSRECOMP_ROOT/third_party/freebios/drastic_bios_arm7.bin" --out "$GEN" --bank freebios_arm7 >/dev/null
 cp "$HERE"/stubs/*.c "$GEN"/
 
+# The native build runs only its own translated code (ARM9 and ARM7), so the
+# legacy title banks stay out of it. They carry validation copies of the
+# cartridge's code bytes, which must not ship in a public .nro.
+if [ "$NATIVE" = 1 ]; then
+  TITLE_BANK_DIR=""; TITLE_BANK_SHA1=""
+else
+  TITLE_BANK_DIR="$MPH_ROOT/generated/recomp"; TITLE_BANK_SHA1="$ROM_SHA1"
+fi
+
 say "5/6 Switch configure and build"
 COMPAT="$HERE/compat"
 INC="$COMPAT;/opt/devkitpro/libnx/include;/opt/devkitpro/portlibs/switch/include"
@@ -127,8 +136,8 @@ INC="$COMPAT;/opt/devkitpro/libnx/include;/opt/devkitpro/portlibs/switch/include
   -DMPHNX_DEKO_SHADERS='$DEKO_DIR/nx_deko_shaders.c' \
   -DNDSRECOMP_ROOT='$NDSRECOMP_ROOT' \
   -DNDS_GENERATED_DIR='$GEN' \
-  -DNDS_TITLE_BANK_DIR='$MPH_ROOT/generated/recomp' \
-  -DNDS_TITLE_ROM_SHA1=$ROM_SHA1 \
+  -DNDS_TITLE_BANK_DIR='$TITLE_BANK_DIR' \
+  -DNDS_TITLE_ROM_SHA1=$TITLE_BANK_SHA1 \
   -DNDS_RECOMP_UI_ROOT='$MPH_ROOT/third_party/recomp-ui' \
   -DNDSRECOMP_COMPILE_JOBS=$JOBS -DNDSRECOMP_LINK_JOBS=1 \
   '-DCMAKE_C_STANDARD_INCLUDE_DIRECTORIES=$INC' \
@@ -142,15 +151,24 @@ ELF="$BUILD_DIR/switch/runner/nds_runner.elf"
 [ "$NRO" -nt "$STAMP" ] || die "NRO was not rebuilt by this run (stale file)"
 SIZE=$(stat -c %s "$NRO")
 say "  mph-nx.nro: $((SIZE / 1048576)) MB"
-[ "$SIZE" -gt $((50 * 1048576)) ] || die "NRO is suspiciously small (banks missing?)"
+if [ "$NATIVE" = 1 ]; then MIN_MB=20; else MIN_MB=50; fi
+[ "$SIZE" -gt $((MIN_MB * 1048576)) ] || die "NRO is suspiciously small (game code missing?)"
 "$DKRUN" "aarch64-none-elf-nm -C '$ELF' > '$BUILD_DIR/switch/nds_runner.syms'"
 for sym in SDL_CreateRenderer SDL_OpenAudioDevice SDL_GameControllerOpen SDL_RenderPresent \
-           nds_upstream_main g_dispatch_mph_arm9 g_dispatch_freebios_arm9 \
+           nds_upstream_main g_dispatch_freebios_arm9 \
            __wrap_pthread_create __libnx_exception_handler; do
   grep -q "$sym" "$BUILD_DIR/switch/nds_runner.syms" || die "symbol missing from ELF: $sym"
 done
+if [ "$NATIVE" != 1 ]; then
+  grep -q g_dispatch_mph_arm9 "$BUILD_DIR/switch/nds_runner.syms" || die "symbol missing from ELF: g_dispatch_mph_arm9"
+fi
 if [ "$NATIVE" = 1 ]; then
-  for sym in nr_resume_arm9 nr_install nr_tab_static nr_overlays N_02004800_a; do
+  # No cartridge bytes in a public build: the legacy banks' validation copies
+  # must be absent, and the native ARM7 program must be present instead.
+  if grep -q "g_validation_mph\|g_dispatch_mph_" "$BUILD_DIR/switch/nds_runner.syms"; then
+    die "legacy title banks linked into the native build (cartridge bytes)"
+  fi
+  for sym in nr_resume_arm9 nr_install nr_tab_static nr_overlays N_02004800_a nr7_install; do
     grep -q "$sym" "$BUILD_DIR/switch/nds_runner.syms" || die "native program missing from ELF: $sym"
   done
   # The Rev 1 game.toml for the SD card (sha1 gates every Rev 0-only feature off).
