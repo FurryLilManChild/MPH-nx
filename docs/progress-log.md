@@ -9,6 +9,7 @@ Newest first.
 - Online: libnx sockets (8 BSD sessions) and an nifm check in the log, --network on --wfc on --wfc-provider kaeru. Rev 1 errno word for the 52200 fix found at 0x02102CAC (all four Rev 0 call sites of 0x021021EC match it), written to game.toml.
 - Host check with network and WFC on: the game switches the Wi-Fi chip on and off at boot, the run stays identical to the offline run at 3e9 cycles. The cloud cannot reach Wiimmfi, so the lobby test is Mark's on the Switch.
 - Build sha256 d1e2c25e, delivered to C:\MPH-nx\out\sd-MP1.
+- Result (Mark, Switch): reached the "searching for players" lobby. Log: AP association, DHCP (DNS 178.62.43.212), conntest OK, nas login through the Kaeru gateway, WFC identity persisted to firmware-state.bin, then Wiimmfi GameSpy (available, gpcm, master, gamestats) and ms13 matchmaking polled every 3 to 4 s for two minutes. 60 fps throughout; no network errors. The DWC/SSL code is not in the native program yet (716 miss lines, mostly 0x021xxxxx) and runs on the interpreter, about 3 s of heavy work during the SSL login. Next: a match against Mark's real DS on the Kaeru DNS, then MP2 with the online roots added to the native program.
 
 ## 2026-11-09: 0.5.0 public release build
 
