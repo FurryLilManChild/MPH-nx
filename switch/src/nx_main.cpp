@@ -38,8 +38,16 @@ int nds_upstream_main(int argc, char** argv);  // upstream main.cpp, renamed at 
 #define MPHNX_VERSION "switch-test9"
 #endif
 
-static const char* kAppDir = "/switch/mph-nx";
-static const char* kLogDir = "/switch/mph-nx/logs";
+#ifndef MPHNX_APP_DIR
+#define MPHNX_APP_DIR "/switch/mph-nx"
+#endif
+#ifndef MPHNX_APP_NAME
+#define MPHNX_APP_NAME "mph-nx"
+#endif
+// The SD folder this build lives in. Test variants such as the online test
+// (mph-nx-MP) get their own folder, logs, settings, save and states.
+static const char* kAppDir = MPHNX_APP_DIR;
+static const char* kLogDir = MPHNX_APP_DIR "/logs";
 
 // ---------------------------------------------------------------------------
 // Logs: one file per stream, previous launch kept as *.prev.*
@@ -169,7 +177,7 @@ extern "C" void __libnx_exception_handler(ThreadExceptionDump* ctx) {
 
     FsFileSystem* fs = fsdevGetDeviceFileSystem("sdmc");
     if (fs) {
-        char path[96] = "/switch/mph-nx/logs/crash-";
+        char path[96] = MPHNX_APP_DIR "/logs/crash-";
         int p = (int)strlen(path);
         p += fmt_hex(path + p, g_crash_id);
         path[p++] = '.'; path[p++] = 't'; path[p++] = 'x'; path[p++] = 't'; path[p] = 0;
@@ -224,13 +232,23 @@ static bool rom_header(const std::string& p, char code[5], int* version) {
     return true;
 }
 
+static std::string find_rom_in(const char* dir);
+
+// The ROM goes next to the .nro. A test variant also finds the one already
+// in the release folder, so the ROM does not need a second copy.
 static std::string find_rom() {
-    DIR* d = opendir(kAppDir);
+    std::string r = find_rom_in(kAppDir);
+    if (r.empty() && strcmp(kAppDir, "/switch/mph-nx") != 0) r = find_rom_in("/switch/mph-nx");
+    return r;
+}
+
+static std::string find_rom_in(const char* dir) {
+    DIR* d = opendir(dir);
     if (!d) return {};
     std::string found;
     while (dirent* de = readdir(d)) {
         if (!ends_with_nds(de->d_name)) continue;
-        std::string p = std::string(kAppDir) + "/" + de->d_name;
+        std::string p = std::string(dir) + "/" + de->d_name;
         struct stat st{};
         if (stat(p.c_str(), &st) == 0 && st.st_size == 64 * 1024 * 1024) {
 #if defined(MPHNX_NATIVE)
@@ -439,6 +457,31 @@ static void prof_main(void*) {
 
 // ---------------------------------------------------------------------------
 
+#if defined(MPHNX_ONLINE)
+// Sockets for the slirp network backend, and a log line saying whether the
+// Switch itself is online (the game cannot reach Wiimmfi if it is not).
+static void nx_online_init() {
+    SocketInitConfig cfg = *socketGetDefaultInitConfig();
+    cfg.num_bsd_sessions = 8;
+    const Result rc = socketInitialize(&cfg);
+    std::printf("[online] sockets: %s (0x%x)\n", R_SUCCEEDED(rc) ? "ready" : "FAILED", rc);
+    if (R_SUCCEEDED(nifmInitialize(NifmServiceType_User))) {
+        u32 ip = 0;
+        NifmInternetConnectionType type{}; u32 strength = 0; NifmInternetConnectionStatus st{};
+        const Result rs = nifmGetInternetConnectionStatus(&type, &strength, &st);
+        const Result ri = nifmGetCurrentIpAddress(&ip);
+        if (R_SUCCEEDED(rs) && R_SUCCEEDED(ri))
+            std::printf("[online] Switch connected: type %d strength %u status %d ip %u.%u.%u.%u\n",
+                        (int)type, strength, (int)st, ip & 255, (ip >> 8) & 255, (ip >> 16) & 255, ip >> 24);
+        else
+            std::printf("[online] Switch is NOT connected to the internet (0x%x / 0x%x)\n", rs, ri);
+        nifmExit();
+    }
+    std::printf("[online] Nintendo WFC on: DNS kaeru (178.62.43.212) -> Wiimmfi\n");
+    std::fflush(stdout);
+}
+#endif
+
 int main(int argc, char** argv) {
     (void)argc; (void)argv;
     g_crash_id = (u32)(armGetSystemTick() ^ (armGetSystemTick() >> 32));
@@ -462,6 +505,9 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+#if defined(MPHNX_ONLINE)
+    nx_online_init();
+#endif
     const std::string rom = find_rom();
     if (rom.empty()) {
         show_message_and_wait(
@@ -471,7 +517,7 @@ int main(int argc, char** argv) {
 #else
             "  Put your Metroid Prime Hunters (USA, revision 0) .nds file\n"
 #endif
-            "  in /switch/mph-nx/ on the SD card, next to mph-nx.nro.");
+            "  in " MPHNX_APP_DIR "/ on the SD card, next to " MPHNX_APP_NAME ".nro.");
         return 0;
     }
     std::printf("[mph-nx] rom: %s\n", rom.c_str());
@@ -489,7 +535,7 @@ int main(int argc, char** argv) {
 
     std::vector<std::string> args;
     auto add = [&](const std::string& s) { args.push_back(s); };
-    add(app + "/mph-nx.nro");
+    add(app + "/" MPHNX_APP_NAME ".nro");
     add(app + "/bios");                       // positional: bios dir (FreeBIOS used)
     add("--rom"); add(rom);
     add("--config"); add(app + "/game.toml");
@@ -507,13 +553,17 @@ int main(int argc, char** argv) {
     {
         const std::string rev1 = app + "/mph-rev1.sav";
         struct stat st{};
+        // A test variant starts from a copy of the release install's save
+        // (read only; /switch/mph-nx is never written by a variant).
+        const std::string seed = strcmp(kAppDir, "/switch/mph-nx") != 0
+            ? std::string("/switch/mph-nx/mph-rev1.sav") : app + "/mph.sav";
         if (stat(rev1.c_str(), &st) != 0) {
-            if (FILE* in = fopen((app + "/mph.sav").c_str(), "rb")) {
+            if (FILE* in = fopen(seed.c_str(), "rb")) {
                 if (FILE* out = fopen(rev1.c_str(), "wb")) {
                     char buf[16384]; size_t n;
                     while ((n = fread(buf, 1, sizeof buf, in)) > 0) fwrite(buf, 1, n, out);
                     fclose(out);
-                    std::printf("[mph-nx] Rev 1 save started from a copy of mph.sav\n");
+                    std::printf("[mph-nx] Rev 1 save started from a copy of %s\n", seed.c_str());
                 }
                 fclose(in);
             }
@@ -567,8 +617,17 @@ int main(int argc, char** argv) {
 #if !defined(MPHNX_NATIVE)
     add("--discover-static-misses");
 #endif
+#if defined(MPHNX_ONLINE)
+    // Online test: the game's Wi-Fi goes through the emulated access point and
+    // the slirp virtual network to the Switch's own internet connection; the
+    // DNS is Kaeru's (178.62.43.212), the no-patch DS entry into Wiimmfi.
+    add("--network"); add("on");
+    add("--wfc"); add("on");
+    add("--wfc-provider"); add("kaeru");
+#else
     add("--network"); add("off");
     add("--wfc"); add("off");
+#endif
     add("--performance-governor"); add("off");
     add("--internal-resolution"); add("1");
     // Build 1 measures the plain DS workload: no widened compositor pass.

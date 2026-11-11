@@ -2,6 +2,14 @@
 
 Newest first.
 
+## 2026-11-11: online test 1 (mph-nx-MP, 0.5.0-MP1)
+
+- Research: Wiimmfi serves Metroid Prime Hunters (it has a stats page for it); Kaeru WFC's DNS (178.62.43.212) is the no-patch DS route into it. mstan's PC recomp reaches the Friends and Rivals lobby and has played one match with both instances on one PC; across machines is unproven. The pinned ndsrecomp already carries melonDS Wi-Fi, the emulated access point, libslirp and a "kaeru" WFC provider, all linked in the .nro but switched off by the launcher.
+- Build variants: MPHNX_APP (SD folder and .nro name) and MPHNX_ONLINE in build.sh and CMakeLists.txt; nx_main.cpp and frontend.cpp take their SD paths from MPHNX_APP_DIR. A variant finds the ROM in /switch/mph-nx/ and seeds its save from a copy of /switch/mph-nx/mph-rev1.sav; it never writes the release folder.
+- Online: libnx sockets (8 BSD sessions) and an nifm check in the log, --network on --wfc on --wfc-provider kaeru. Rev 1 errno word for the 52200 fix found at 0x02102CAC (all four Rev 0 call sites of 0x021021EC match it), written to game.toml.
+- Host check with network and WFC on: the game switches the Wi-Fi chip on and off at boot, the run stays identical to the offline run at 3e9 cycles. The cloud cannot reach Wiimmfi, so the lobby test is Mark's on the Switch.
+- Build sha256 d1e2c25e, delivered to C:\MPH-nx\out\sd-MP1.
+
 ## 2026-11-09: 0.5.0 public release build
 
 - Game bytes out of the .nro: the native build no longer links the legacy title banks (their validation arrays held about 4.4 MB of copied cartridge code; the native runtime never ran them). The native overlay table stores an FNV-1a 64 hash of each overlay's first 64 bytes instead of the bytes. build.sh fails a native build if any legacy bank symbol is linked.

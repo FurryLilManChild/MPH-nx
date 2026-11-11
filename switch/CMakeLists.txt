@@ -21,6 +21,10 @@ endif()
 set(MPHNX_VERSION "switch-native14" CACHE STRING "Build label shown in logs and hbmenu")
 set(MPHNX_ENGINE_TAG "switch-native5")
 set(MPHNX_TITLE "MPH-nx" CACHE STRING "Name shown in hbmenu")
+# Test variants (e.g. the online test, mph-nx-MP) live in their own SD folder
+# /switch/<name>/ with <name>.nro, so they never touch the release install.
+set(MPHNX_APP_NAME "mph-nx" CACHE STRING "SD folder and .nro name")
+option(MPHNX_ONLINE "Nintendo WFC through Wiimmfi (Kaeru DNS): network and WFC on at launch" OFF)
 option(MPHNX_PIE_LIBS "Compile the runner's static libraries (game banks included) as -fPIE instead of -fPIC" ON)
 set(MPHNX_PERF_BANK_DIR "" CACHE PATH "Flat-AOT mph_perf_arm9 bank (nds_recompile --flat-execution); empty = faithful only")
 set(MPHNX_DEKO_SHADERS "" CACHE PATH "Generated deko3d shader blob (tools/build_deko_shaders.sh); empty = no GPU 3D renderer")
@@ -160,7 +164,12 @@ target_sources(nds_runner PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/src/nx_lockon.cpp")
 target_compile_definitions(nds_runner PRIVATE MPHNX_VERSION="${MPHNX_ENGINE_TAG}")
 set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/nx_main.cpp" "${NDSRECOMP_ROOT}/runner/src/frontend.cpp" TARGET_DIRECTORY nds_runner
-    APPEND PROPERTY COMPILE_DEFINITIONS MPHNX_LABEL="${MPHNX_VERSION}")
+    APPEND PROPERTY COMPILE_DEFINITIONS MPHNX_LABEL="${MPHNX_VERSION}"
+    MPHNX_APP_NAME="${MPHNX_APP_NAME}" MPHNX_APP_DIR="/switch/${MPHNX_APP_NAME}")
+if(MPHNX_ONLINE)
+    set_property(SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/nx_main.cpp" "${NDSRECOMP_ROOT}/runner/src/frontend.cpp" TARGET_DIRECTORY nds_runner
+        APPEND PROPERTY COMPILE_DEFINITIONS MPHNX_ONLINE=1)
+endif()
 target_include_directories(nds_runner PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_link_options(nds_runner PRIVATE
     "-Wl,--wrap=pthread_create"
@@ -177,13 +186,13 @@ if(NOT _runner_libs MATCHES "nds_banks")
 endif()
 
 nx_generate_nacp(
-    OUTPUT "${CMAKE_BINARY_DIR}/mph-nx.nacp"
+    OUTPUT "${CMAKE_BINARY_DIR}/${MPHNX_APP_NAME}.nacp"
     NAME "${MPHNX_TITLE}"
     AUTHOR "FurryLilManChild"
     VERSION "${MPHNX_VERSION}")
 
 # 0.5.0: original hbmenu icon (lock-on reticle; no game artwork).
 nx_create_nro(nds_runner
-    OUTPUT "${CMAKE_BINARY_DIR}/mph-nx.nro"
+    OUTPUT "${CMAKE_BINARY_DIR}/${MPHNX_APP_NAME}.nro"
     ICON "${CMAKE_CURRENT_SOURCE_DIR}/assets/icon.jpg"
-    NACP "${CMAKE_BINARY_DIR}/mph-nx.nacp")
+    NACP "${CMAKE_BINARY_DIR}/${MPHNX_APP_NAME}.nacp")

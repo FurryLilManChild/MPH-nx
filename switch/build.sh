@@ -27,6 +27,12 @@ DKRUN="${DKRUN:-/home/claude/dk.sh}"
 JOBS="${JOBS:-2}"
 VERSION="${MPHNX_VERSION:-0.5.0}"
 TITLE="${MPHNX_TITLE:-MPH-nx}"
+# APP: SD folder and .nro name. ONLINE=1 turns on Nintendo WFC (Wiimmfi via
+# the Kaeru DNS). The online test is APP=mph-nx-MP ONLINE=1, so it installs
+# beside the release in /switch/mph-nx-MP/ and never touches /switch/mph-nx/.
+APP="${MPHNX_APP:-mph-nx}"
+ONLINE="${MPHNX_ONLINE:-0}"
+if [ "$ONLINE" = 1 ]; then ONLINE_CMAKE=ON; else ONLINE_CMAKE=OFF; fi
 PIE_LIBS="${MPHNX_PIE_LIBS:-ON}"
 LEAN="${MPHNX_LEAN:-ON}"
 # NATIVE=1 (default): the native ARM9 program for USA Rev 1 (tools/nrecomp).
@@ -129,6 +135,8 @@ INC="$COMPAT;/opt/devkitpro/libnx/include;/opt/devkitpro/portlibs/switch/include
   -DCMAKE_BUILD_TYPE=Release \
   -DMPHNX_VERSION='$VERSION' \
   -DMPHNX_TITLE='$TITLE' \
+  -DMPHNX_APP_NAME='$APP' \
+  -DMPHNX_ONLINE=$ONLINE_CMAKE \
   -DMPHNX_PIE_LIBS=$PIE_LIBS \
   -DMPHNX_LEAN=$LEAN \
   -DMPHNX_PERF_BANK_DIR='$PERF_DIR' \
@@ -145,12 +153,12 @@ INC="$COMPAT;/opt/devkitpro/libnx/include;/opt/devkitpro/portlibs/switch/include
 "$DKRUN" "ninja -C '$BUILD_DIR/switch' -j$JOBS nds_runner_nro"
 
 say "6/6 checking the artifact"
-NRO="$BUILD_DIR/switch/mph-nx.nro"
+NRO="$BUILD_DIR/switch/$APP.nro"
 ELF="$BUILD_DIR/switch/runner/nds_runner.elf"
 [ -f "$NRO" ] || die "no NRO produced"
 [ "$NRO" -nt "$STAMP" ] || die "NRO was not rebuilt by this run (stale file)"
 SIZE=$(stat -c %s "$NRO")
-say "  mph-nx.nro: $((SIZE / 1048576)) MB"
+say "  $APP.nro: $((SIZE / 1048576)) MB"
 if [ "$NATIVE" = 1 ]; then MIN_MB=20; else MIN_MB=50; fi
 [ "$SIZE" -gt $((MIN_MB * 1048576)) ] || die "NRO is suspiciously small (game code missing?)"
 "$DKRUN" "aarch64-none-elf-nm -C '$ELF' > '$BUILD_DIR/switch/nds_runner.syms'"
@@ -196,6 +204,16 @@ startup_mode = "automatic"
 save_type = "flash"
 save_size = 262144
 TOML
+  if [ "$ONLINE" = 1 ]; then
+    cat >> "$BUILD_DIR/switch/game.toml" <<TOML
+
+[network.wfc]
+# Guest CRT errno word in the Rev 1 ARM9 image (Rev 0: 0x021021EC; the same
+# four strtol/atoi call sites load 0x02102CAC in Rev 1). Zeroed on every AP
+# association so a second WFC connect in one launch does not fail with 52200.
+clear_crt_errno_addr = 0x02102CAC
+TOML
+  fi
   say "  native ARM9 program present; Rev 1 game.toml written"
 fi
 say "  renderer, audio, input, game banks, FreeBIOS and Switch layer all present"
